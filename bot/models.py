@@ -13,3 +13,4 @@ class Job:
     url: str
     source: str
     posted_at: datetime | None = None
+    description: str | None = None  # scraped text — classified at ingestion, never stored to DB

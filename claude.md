@@ -1,6 +1,6 @@
 # Job Scraper Bot
 
-Discord bot that polls job posting sources and notifies on new entry-level/intern SWE roles in the US.
+Discord bot that polls job posting sources and notifies on new entry-level/intern SWE and EE roles in the US.
 
 ## Stack
 - Python 3.11+, `discord.py` (bot client), `httpx` (async HTTP for scrapers), `APScheduler` (scheduling), `aiosqlite` (SQLite), `pydantic-settings`, `uv`
@@ -12,7 +12,7 @@ bot/
 ├── config.py              # pydantic-settings, reads .env
 ├── models.py              # Job dataclass (shared by all scrapers)
 ├── filters.py             # keyword + location + level logic
-├── db.py                  # seen-IDs via SQLite (aiosqlite)
+├── db.py                  # aiosqlite — job_postings dedup + user preferences
 ├── notifier.py            # sends discord.Embed messages to the configured channel
 ├── scheduler.py           # APScheduler — poll functions + orchestration
 └── scrapers/
@@ -38,19 +38,99 @@ python -m bot.main         # run the bot
 - **Custom scrapers** for Google, Meta, Amazon, Apple, Microsoft, Uber — target backing JSON APIs via DevTools, not HTML (not yet implemented)
 
 ## Filtering (filters.py)
-Target: entry-level and intern SWE roles, US only, any season
+Two-stage filter. Target: intern and new-grad/entry-level SWE and EE roles, US only.
 
-- **Title include (regex):** `intern`, `internship`, `new grad`, `university grad`, `entry level`, `swe i`, `software engineer i`, `l3`
-- **Title exclude (regex):** `senior`, `staff`, `principal`, `manager`, `lead`, `sr.`
-- **Location:** must contain a US state name, state abbreviation, known city, or keyword (`united states`, `usa`, `u.s.`, `remote`)
+**Stage 1 — Tech relevance** (`is_tech_job`): title must match `DISCIPLINE_INCLUDE` regex. Covers both SWE and EE keywords. All passing jobs are stored in `job_postings`.
+
+**Stage 2 — Entry-level classification** (`classify_job` → `passes_filter`):
+- `classify_job(job) -> (is_intern, is_new_grad)`:
+  1. Source trust: `simplify-intern` → intern, `simplify-newgrad` → new_grad
+  2. Title: `_INTERN_TITLE` (intern, internship, co-op) / `_NEW_GRAD_TITLE` (new grad, university grad, entry level, junior, jr., associate, early career, campus hire, swe i, l3)
+  3. Description (Greenhouse + Lever only): `_INTERN_DESC` / `_NEW_GRAD_DESC` patterns; `_SENIOR_EXP` (4+ years of experience) forces both False
+- `passes_filter(job)`: title not in `TITLE_EXCLUDE` (senior, staff, principal, manager, lead, sr.), `classify_job` returns at least one True, title matches `DISCIPLINE_INCLUDE`, location is US
+
+**Discipline classification** (`classify_discipline(job) -> str`):
+- `"swe"` — title matches `_SWE_DISCIPLINE` (software, ml, backend, frontend, cloud, data engineer, etc.)
+- `"ee"` — title matches `_EE_DISCIPLINE` (electrical, hardware, embedded, fpga, asic, pcb, rf, analog, etc.) and no SWE match
+- `"unknown"` — neither signal present
+- Stored in `discipline` column on `job_postings`; filterable via `/query`
 
 ## Scraper Behavior
 - Greenhouse/Lever/Ashby: one generic `scrape(slug, client)` function per platform, company = slug in config list
 - Simplify: `scrape(client)` — no slugs, fetches both intern and new-grad listings
-- All scrapers return `list[Job]` with common fields: `id, title, company, location, url, source, posted_at`
-- Dedup via SQLite `seen_jobs` table keyed on `(source, job_id)`
-- Only unseen jobs that pass filters reach the notifier
+- All scrapers return `list[Job]` with common fields: `id, title, company, location, url, source, posted_at, description`
+- `description` is temporary — used for classification at ingestion time, never stored to DB
+- Greenhouse and Lever populate `description`; Ashby list endpoint doesn't expose it; Simplify is classified by source name
+- Dedup via `job_postings` table `UNIQUE (source, job_id)` — `INSERT OR IGNORE` skips already-seen jobs
+- Only tech-relevant jobs (title matches DISCIPLINE_INCLUDE) are stored in `job_postings`
+- Only unseen CS jobs that pass the full entry-level/US filter reach the notifier
 - Each slug request has a 1-second sleep between calls to be polite
+
+## Database Schema
+
+Single SQLite file (`jobs.db` by default). Three tables:
+
+### `job_postings`
+Stores every tech-relevant job returned by scrapers. Replaces the old `seen_jobs` table. Dedup via `UNIQUE (source, job_id)` + `INSERT OR IGNORE`. Location stored as raw string; parsed breakdowns live in `job_locations`.
+
+```sql
+CREATE TABLE IF NOT EXISTS job_postings (
+    id           INTEGER   PRIMARY KEY AUTOINCREMENT,
+    source       TEXT      NOT NULL,              -- greenhouse | lever | ashby | simplify
+    job_id       TEXT      NOT NULL,              -- platform-assigned ID
+    title        TEXT      NOT NULL,
+    company      TEXT      NOT NULL,
+    location_raw TEXT      NOT NULL,              -- unparsed string from scraper
+    url          TEXT      NOT NULL,
+    posted_at    TIMESTAMP,                       -- from scraper, nullable
+    ingested_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_intern    INTEGER,                         -- 1/0/NULL (NULL = unclassified)
+    is_new_grad  INTEGER,                         -- 1/0/NULL
+    is_remote    INTEGER   NOT NULL DEFAULT 0,    -- 1 if any location segment is remote
+    discipline   TEXT      NOT NULL DEFAULT 'unknown',  -- "swe" | "ee" | "unknown"
+    UNIQUE (source, job_id)
+);
+
+CREATE TABLE IF NOT EXISTS job_locations (
+    id          INTEGER   PRIMARY KEY AUTOINCREMENT,
+    posting_id  INTEGER   NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+    country     TEXT,                            -- parsed ISO code, e.g. "US", "GB"
+    state       TEXT,                            -- US state abbrev, e.g. "CA"
+    city        TEXT,                            -- parsed city name
+    is_remote   INTEGER   NOT NULL DEFAULT 0     -- 1 if this segment is remote
+);
+```
+
+### `user_preferences`
+Per-Discord-user notification and delivery settings. Filter logic lives in `user_filter_rules`.
+
+```sql
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id                TEXT      PRIMARY KEY,
+    dm_enabled             INTEGER   NOT NULL DEFAULT 1,
+    alert_interval_minutes INTEGER   NOT NULL DEFAULT 60,
+    quiet_hours_start      TEXT,                          -- "HH:MM" | NULL
+    quiet_hours_end        TEXT,                          -- "HH:MM" | NULL
+    companies              TEXT      NOT NULL DEFAULT '[]',  -- JSON slug list; [] = all
+    created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### `user_filter_rules`
+Additive filter tuples. Each row = one independent filter; a user is notified if ANY rule matches (OR logic). Combines role type with location scope.
+
+```sql
+CREATE TABLE IF NOT EXISTS user_filter_rules (
+    id             INTEGER   PRIMARY KEY AUTOINCREMENT,
+    user_id        TEXT      NOT NULL REFERENCES user_preferences(user_id) ON DELETE CASCADE,
+    role_type      TEXT      NOT NULL,  -- "intern" | "new_grad" | "entry_level"
+    location_scope TEXT      NOT NULL,  -- "us" | "remote" | "country:XX" | "state:XX" | "city:Name"
+    created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Example: `(intern, us)` + `(entry_level, state:CO)` = internships anywhere in US OR entry-level roles in Colorado.
 
 ## Scheduling
 - Greenhouse / Lever / Ashby: every `POLL_INTERVAL_MINUTES` (default 10)
@@ -68,6 +148,7 @@ Target: entry-level and intern SWE roles, US only, any season
 ```
 DISCORD_TOKEN=your-bot-token
 DISCORD_CHANNEL_ID=123456789012345678
+DISCORD_GUILD_ID=123456789012345678  # optional; enables instant guild-scoped slash command sync
 GREENHOUSE_SLUGS=stripe,anthropic,airbnb,...
 LEVER_SLUGS=netflix,github,...
 ASHBY_SLUGS=rippling,ramp,...

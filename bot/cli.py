@@ -8,7 +8,8 @@ import logging
 
 import httpx
 
-from bot.filters import passes_filter
+from bot.db import init_db, store_jobs_batch
+from bot.filters import classify_discipline, classify_job, is_tech_job, parse_locations, passes_filter
 from bot.models import Job
 from bot.scrapers import ashby, greenhouse, lever, simplify
 
@@ -34,26 +35,35 @@ async def run_scraper(source: str, slug: str | None) -> list[Job]:
             return []
 
 
-async def dry_run(source: str, slug: str | None, show_all: bool) -> None:
+async def dry_run(source: str, slug: str | None, show_all: bool, store: bool) -> None:
     logger.info("Scraping %s%s...", source, f"/{slug}" if slug else "")
     jobs = await run_scraper(source, slug)
     logger.info("Got %d raw jobs", len(jobs))
 
-    if show_all:
-        filtered = jobs
-    else:
-        filtered = [j for j in jobs if passes_filter(j)]
-        logger.info("%d jobs pass filters", len(filtered))
+    cs_jobs = [j for j in jobs if is_tech_job(j)]
+    logger.info("%d jobs are tech-relevant", len(cs_jobs))
 
-    for job in filtered:
+    if show_all:
+        display = jobs
+    else:
+        display = [j for j in cs_jobs if passes_filter(j)]
+        logger.info("%d jobs pass the full entry-level/US filter", len(display))
+
+    for job in display:
         print(f"  [{job.source}] {job.title}")
         print(f"    Company:  {job.company}")
         print(f"    Location: {job.location}")
         print(f"    URL:      {job.url}")
         print()
 
-    if not filtered:
+    if not display:
         print("  (no matching jobs)")
+
+    if store:
+        await init_db()
+        await store_jobs_batch(cs_jobs, parse_locations, classify_job, classify_discipline)
+        from bot.config import settings
+        logger.info("Stored %d CS jobs to %s", len(cs_jobs), settings.db_path)
 
 
 def main() -> None:
@@ -75,12 +85,17 @@ def main() -> None:
         dest="show_all",
         help="Show all jobs, not just ones that pass filters",
     )
+    parser.add_argument(
+        "--store",
+        action="store_true",
+        help="Store CS-relevant jobs to the local jobs.db (creates it if missing)",
+    )
     args = parser.parse_args()
 
     if args.source != "simplify" and not args.slug:
         parser.error(f"{args.source} requires a company slug")
 
-    asyncio.run(dry_run(args.source, args.slug, args.show_all))
+    asyncio.run(dry_run(args.source, args.slug, args.show_all, args.store))
 
 
 if __name__ == "__main__":

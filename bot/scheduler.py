@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot import db
 from bot.config import settings
-from bot.filters import passes_filter
+from bot.filters import classify_discipline, classify_job, is_tech_job, parse_locations, passes_filter
 from bot.models import Job
 from bot.notifier import notify
 from bot.scrapers import ashby, greenhouse, lever, simplify
@@ -26,24 +26,31 @@ def set_channel(channel: discord.TextChannel) -> None:
 
 
 async def _process_jobs(jobs: list[Job]) -> None:
-    """Filter, dedup, notify, and mark as seen."""
+    """Dedup, store CS jobs, filter to entry-level/US, and notify."""
     if _channel is None:
         logger.error("Channel not set — skipping notification")
         return
 
-    filtered = [j for j in jobs if passes_filter(j)]
+    # Pre-filter to tech-relevant roles before touching the DB
+    cs_jobs = [j for j in jobs if is_tech_job(j)]
 
-    new_jobs: list[Job] = []
-    for job in filtered:
+    # Determine which CS jobs are new (not yet in job_postings)
+    new_cs_jobs: list[Job] = []
+    for job in cs_jobs:
         if not await db.is_seen(job.source, job.id):
-            new_jobs.append(job)
+            new_cs_jobs.append(job)
 
-    if not new_jobs:
+    # Persist all new CS jobs (parse_location runs inside store_jobs_batch)
+    if new_cs_jobs:
+        await db.store_jobs_batch(new_cs_jobs, parse_locations, classify_job, classify_discipline)
+
+    # Notify only those that also pass the full entry-level/US filter
+    to_notify = [j for j in new_cs_jobs if passes_filter(j)]
+    if not to_notify:
         return
 
-    logger.info("Found %d new jobs", len(new_jobs))
-    await notify(new_jobs, _channel)
-    await db.mark_seen_batch([(j.source, j.id) for j in new_jobs])
+    logger.info("Found %d new jobs to notify", len(to_notify))
+    await notify(to_notify, _channel)
 
 
 async def poll_greenhouse() -> None:

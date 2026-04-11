@@ -23,6 +23,8 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
     jobs = []
     for item in resp.json():
         location = item.get("categories", {}).get("location", "")
+        # Prefer plain text; fall back to HTML description
+        description = item.get("descriptionPlain") or item.get("description") or None
         jobs.append(
             Job(
                 id=item["id"],
@@ -31,6 +33,7 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
                 location=location,
                 url=item.get("hostedUrl", ""),
                 source="lever",
+                description=description,
             )
         )
     return jobs

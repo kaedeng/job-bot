@@ -43,7 +43,7 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
         return []
 
     jobs = []
-    data = resp.json().get("data", {}).get("jobBoardWithTeams", {})
+    data = resp.json().get("data", {}).get("jobBoardWithTeams") or {}
     for item in data.get("jobPostings", []):
         jobs.append(
             Job(
@@ -53,6 +53,7 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
                 location=item.get("locationName", ""),
                 url=f"https://jobs.ashbyhq.com/{slug}/{item['id']}",
                 source="ashby",
+                description=item.get("descriptionPlain") or None,
             )
         )
     return jobs

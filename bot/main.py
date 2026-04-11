@@ -4,7 +4,9 @@ import asyncio
 import logging
 
 import discord
+from discord import app_commands
 
+from bot import commands
 from bot.config import settings
 from bot.db import init_db
 from bot.scheduler import (
@@ -24,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
+commands.register(tree)
 
 
 @bot.event
@@ -40,6 +44,15 @@ async def on_ready() -> None:
 
     logger.info("Initializing database...")
     await init_db()
+
+    if settings.discord_guild_id:
+        guild = discord.Object(id=settings.discord_guild_id)
+        tree.copy_global_to(guild=guild)
+        await tree.sync(guild=guild)
+        logger.info("Slash commands synced to guild %d (instant)", settings.discord_guild_id)
+    else:
+        await tree.sync()
+        logger.info("Slash commands synced globally (may take up to 1 hour to propagate)")
 
     # Run all scrapers once on startup
     logger.info("Running initial scrape...")

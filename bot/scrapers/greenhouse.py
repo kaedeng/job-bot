@@ -31,6 +31,7 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
                 location=location,
                 url=item.get("absolute_url", ""),
                 source="greenhouse",
+                description=item.get("content") or None,
             )
         )
     return jobs

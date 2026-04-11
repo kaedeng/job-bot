@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     discord_token: str
     discord_channel_id: int
+    discord_guild_id: int | None = None  # set for instant slash command sync during dev
 
     greenhouse_slugs: list[str] = []
     lever_slugs: list[str] = []
