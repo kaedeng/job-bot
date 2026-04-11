@@ -29,10 +29,13 @@ def _job(
 
 @pytest.fixture
 async def fresh_db(tmp_path, monkeypatch):
+    # Close any existing shared connection so init_db picks up the new path
+    await db.close()
     path = str(tmp_path / "test.db")
     monkeypatch.setattr(db, "_DB_PATH", path)
     await db.init_db()
-    return path
+    yield path
+    await db.close()
 
 
 async def _store(jobs: list[Job]) -> None:
@@ -46,20 +49,30 @@ async def _store(jobs: list[Job]) -> None:
 
 class TestStripDescription:
     def test_strips_html_tags(self):
-        assert db._strip_description("<p>Hello <b>World</b></p>") == "Hello World"
+        from bot.filters import strip_html
+
+        assert strip_html("<p>Hello <b>World</b></p>") == "Hello World"
 
     def test_collapses_whitespace(self):
-        assert db._strip_description("foo   bar\n\nbaz") == "foo bar baz"
+        from bot.filters import strip_html
+
+        assert strip_html("foo   bar\n\nbaz") == "foo bar baz"
 
     def test_truncates_to_5000(self):
+        from bot.filters import strip_html
+
         long_text = "a" * 6000
-        assert len(db._strip_description(long_text)) == 5000
+        assert len(strip_html(long_text)[: db._DESC_MAX_CHARS]) == 5000
 
     def test_empty_string(self):
-        assert db._strip_description("") == ""
+        from bot.filters import strip_html
+
+        assert strip_html("") == ""
 
     def test_nested_html(self):
-        result = db._strip_description("<div><ul><li>Item</li></ul></div>")
+        from bot.filters import strip_html
+
+        result = strip_html("<div><ul><li>Item</li></ul></div>")
         assert "Item" in result
         assert "<" not in result
 
@@ -84,6 +97,41 @@ class TestIsSeen:
     async def test_different_id_not_seen(self, fresh_db):
         await _store([_job(id="1")])
         assert not await db.is_seen("greenhouse", "999")
+
+
+# ---------------------------------------------------------------------------
+# filter_unseen
+# ---------------------------------------------------------------------------
+
+
+class TestFilterUnseen:
+    async def test_all_unseen(self, fresh_db):
+        jobs = [_job(id="1"), _job(id="2")]
+        result = await db.filter_unseen(jobs)
+        assert len(result) == 2
+
+    async def test_filters_out_seen(self, fresh_db):
+        await _store([_job(id="1")])
+        jobs = [_job(id="1"), _job(id="2")]
+        result = await db.filter_unseen(jobs)
+        assert len(result) == 1
+        assert result[0].id == "2"
+
+    async def test_all_seen(self, fresh_db):
+        await _store([_job(id="1"), _job(id="2")])
+        jobs = [_job(id="1"), _job(id="2")]
+        result = await db.filter_unseen(jobs)
+        assert result == []
+
+    async def test_empty_input(self, fresh_db):
+        result = await db.filter_unseen([])
+        assert result == []
+
+    async def test_different_sources_not_conflated(self, fresh_db):
+        await _store([_job(id="1", source="greenhouse")])
+        jobs = [_job(id="1", source="lever")]
+        result = await db.filter_unseen(jobs)
+        assert len(result) == 1
 
 
 # ---------------------------------------------------------------------------

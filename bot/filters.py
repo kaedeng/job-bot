@@ -206,6 +206,9 @@ US_CITIES = {
 
 US_KEYWORDS = {"united states", "usa", "u.s.", "remote"}
 
+# Precompiled single-pass regex for all US state abbreviations
+_US_STATE_ABBREV_RE = re.compile(r"\b(" + "|".join(US_STATE_ABBREVS) + r")\b")
+
 # Full US state name -> abbreviation (used in parse_location)
 _STATE_TO_ABBREV: dict[str, str] = {
     "alabama": "AL",
@@ -335,10 +338,9 @@ def _is_us_location(location: str) -> bool:
     if any(city in loc_lower for city in US_CITIES):
         return True
 
-    # Check for state abbreviations like ", CA" or "(NY)"
-    for abbrev in US_STATE_ABBREVS:
-        if re.search(rf"\b{abbrev}\b", location):
-            return True
+    # Single-pass check for any US state abbreviation
+    if _US_STATE_ABBREV_RE.search(location):
+        return True
 
     return False
 
@@ -395,22 +397,19 @@ def parse_location(location: str) -> tuple[str | None, str | None, str | None]:
     loc_lower = loc.lower()
 
     # --- US detection ---
+    abbrev_match = _US_STATE_ABBREV_RE.search(loc)
     is_us = (
         any(kw in loc_lower for kw in US_KEYWORDS)
         or any(state in loc_lower for state in US_STATES)
         or any(city in loc_lower for city in US_CITIES)
-        or any(re.search(rf"\b{abbrev}\b", loc) for abbrev in US_STATE_ABBREVS)
+        or abbrev_match is not None
     )
 
     if is_us:
         country: str | None = "US"
 
         # State abbreviation first (e.g. ", CA" or "(NY)")
-        state: str | None = None
-        for abbrev in US_STATE_ABBREVS:
-            if re.search(rf"\b{abbrev}\b", loc):
-                state = abbrev
-                break
+        state: str | None = abbrev_match.group(1) if abbrev_match else None
 
         # Fall back to full state name
         if state is None:
@@ -491,7 +490,7 @@ def parse_locations(location_raw: str) -> list[dict]:
     return results
 
 
-def _strip_html(text: str) -> str:
+def strip_html(text: str) -> str:
     """Remove HTML tags and collapse whitespace."""
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
 
@@ -518,7 +517,7 @@ def classify_job(job: Job) -> tuple[bool, bool]:
 
     # 2. Description scanning (HTML stripped before matching)
     if job.description:
-        desc = _strip_html(job.description)
+        desc = strip_html(job.description)
         if _SENIOR_EXP.search(desc):
             # Description explicitly asks for 4+ years — not entry level
             return False, False

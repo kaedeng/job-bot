@@ -10,12 +10,12 @@ from bot import commands
 from bot.config import settings
 from bot.db import init_db
 from bot.scheduler import (
-    poll_amazon,
     poll_ashby,
     poll_greenhouse,
     poll_lever,
     poll_simplify,
     poll_user_alerts,
+    run_custom_scrapers,
     set_bot,
     set_channel,
     start_scheduler,
@@ -65,7 +65,7 @@ async def on_ready() -> None:
         poll_lever(),
         poll_ashby(),
         poll_simplify(),
-        poll_amazon(),
+        *run_custom_scrapers(),
     )
 
     # Immediately check if any users are due for an alert after the first scrape

@@ -406,7 +406,7 @@ def _loc_display(setup: _AlertSetup) -> str:
     return "Anywhere worldwide"
 
 
-def _interval_display(mins: int) -> str:
+def interval_display(mins: int) -> str:
     if mins == 1:
         return "1 minute (testing)"
     if mins < 60:
@@ -432,7 +432,7 @@ def _build_summary(setup: _AlertSetup) -> str:
         f"**Roles:** {role_str}",
         f"**Discipline:** {disc_str}",
         f"**Location:** {_loc_display(setup)}",
-        f"**Check interval:** {_interval_display(setup.interval_minutes)}",
+        f"**Check interval:** {interval_display(setup.interval_minutes)}",
     ]
     if setup.keywords:
         lines.append(f"**Keywords:** {', '.join(setup.keywords)}")

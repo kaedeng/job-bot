@@ -1,28 +1,45 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from typing import Any
 
 import aiosqlite
 
 from bot.config import settings
+from bot.filters import strip_html
 from bot.models import Job
 
-_STRIP_HTML_RE = re.compile(r"<[^>]+>")
-_COLLAPSE_WS_RE = re.compile(r"\s+")
 _DESC_MAX_CHARS = 5000
 
 
-def _strip_description(text: str) -> str:
-    """Strip HTML tags, collapse whitespace, and truncate to storage limit."""
-    text = _STRIP_HTML_RE.sub(" ", text)
-    text = _COLLAPSE_WS_RE.sub(" ", text).strip()
-    return text[:_DESC_MAX_CHARS]
-
-
 _DB_PATH = settings.db_path
+
+# ---------------------------------------------------------------------------
+# shared connection
+# ---------------------------------------------------------------------------
+
+_conn: aiosqlite.Connection | None = None
+
+
+async def get_conn() -> aiosqlite.Connection:
+    """Return the shared DB connection, creating it on first call."""
+    global _conn
+    if _conn is None:
+        _conn = await aiosqlite.connect(_DB_PATH)
+        _conn.row_factory = aiosqlite.Row
+        await _conn.execute("PRAGMA journal_mode=WAL")
+        await _conn.execute("PRAGMA foreign_keys=ON")
+    return _conn
+
+
+async def close() -> None:
+    """Close the shared connection (call on shutdown)."""
+    global _conn
+    if _conn is not None:
+        await _conn.close()
+        _conn = None
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS job_postings (
@@ -97,9 +114,9 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
 
 
 async def init_db() -> None:
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.executescript(SCHEMA)
-        await _migrate_db(db)
+    conn = await get_conn()
+    await conn.executescript(SCHEMA)
+    await _migrate_db(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +126,35 @@ async def init_db() -> None:
 
 async def is_seen(source: str, job_id: str) -> bool:
     """Return True if (source, job_id) already exists in job_postings."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT 1 FROM job_postings WHERE source = ? AND job_id = ?",
-            (source, job_id),
-        )
-        return await cursor.fetchone() is not None
+    conn = await get_conn()
+    cursor = await conn.execute(
+        "SELECT 1 FROM job_postings WHERE source = ? AND job_id = ?",
+        (source, job_id),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def filter_unseen(jobs: list[Job]) -> list[Job]:
+    """Return only the jobs whose (source, job_id) pairs are not yet in the DB.
+
+    Uses a single batch query instead of N individual lookups.
+    """
+    if not jobs:
+        return []
+
+    conn = await get_conn()
+    # Build a temp-value list for batch lookup
+    pairs = [(j.source, j.id) for j in jobs]
+    placeholders = ",".join(["(?, ?)"] * len(pairs))
+    flat_params = [v for pair in pairs for v in pair]
+
+    cursor = await conn.execute(
+        "SELECT source, job_id FROM job_postings"  # noqa: S608
+        f" WHERE (source, job_id) IN (VALUES {placeholders})",
+        flat_params,
+    )
+    seen = {(row[0], row[1]) for row in await cursor.fetchall()}
+    return [j for j in jobs if (j.source, j.id) not in seen]
 
 
 async def store_jobs_batch(
@@ -136,54 +176,54 @@ async def store_jobs_batch(
         classify_discipline_fn: Callable[[Job], str] --
             returns "swe", "ee", or "unknown" for each job.
     """
-    async with aiosqlite.connect(_DB_PATH) as db:
-        for j in jobs:
-            locations = parse_locations_fn(j.location)
-            is_remote = any(loc["is_remote"] for loc in locations)
-            is_intern, is_new_grad = classify_fn(j)
-            discipline = classify_discipline_fn(j)
-            posted = j.posted_at.isoformat() if isinstance(j.posted_at, datetime) else j.posted_at
+    conn = await get_conn()
+    for j in jobs:
+        locations = parse_locations_fn(j.location)
+        is_remote = any(loc["is_remote"] for loc in locations)
+        is_intern, is_new_grad = classify_fn(j)
+        discipline = classify_discipline_fn(j)
+        posted = j.posted_at.isoformat() if isinstance(j.posted_at, datetime) else j.posted_at
 
-            desc_text = _strip_description(j.description) if j.description else None
+        desc_text = strip_html(j.description)[:_DESC_MAX_CHARS] if j.description else None
 
-            cursor = await db.execute(
+        cursor = await conn.execute(
+            """
+            INSERT OR IGNORE INTO job_postings
+                (source, job_id, title, company, location_raw,
+                 url, posted_at, is_intern, is_new_grad, is_remote, discipline,
+                 description_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                j.source,
+                j.id,
+                j.title,
+                j.company,
+                j.location,
+                j.url,
+                posted,
+                int(is_intern),
+                int(is_new_grad),
+                int(is_remote),
+                discipline,
+                desc_text,
+            ),
+        )
+
+        if cursor.rowcount == 0:
+            continue  # already existed — skip location insert
+
+        posting_id = cursor.lastrowid
+        for loc in locations:
+            await conn.execute(
                 """
-                INSERT OR IGNORE INTO job_postings
-                    (source, job_id, title, company, location_raw,
-                     url, posted_at, is_intern, is_new_grad, is_remote, discipline,
-                     description_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO job_locations (posting_id, country, state, city, is_remote)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    j.source,
-                    j.id,
-                    j.title,
-                    j.company,
-                    j.location,
-                    j.url,
-                    posted,
-                    int(is_intern),
-                    int(is_new_grad),
-                    int(is_remote),
-                    discipline,
-                    desc_text,
-                ),
+                (posting_id, loc["country"], loc["state"], loc["city"], int(loc["is_remote"])),
             )
 
-            if cursor.rowcount == 0:
-                continue  # already existed — skip location insert
-
-            posting_id = cursor.lastrowid
-            for loc in locations:
-                await db.execute(
-                    """
-                    INSERT INTO job_locations (posting_id, country, state, city, is_remote)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (posting_id, loc["country"], loc["state"], loc["city"], int(loc["is_remote"])),
-                )
-
-        await db.commit()
+    await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -285,21 +325,20 @@ async def query_jobs(
 
     join = "LEFT JOIN job_locations jl ON jp.id = jl.posting_id" if states else ""
 
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            f"""
-            SELECT DISTINCT jp.*
-            FROM job_postings jp
-            {join}
-            {where}
-            ORDER BY jp.ingested_at DESC
-            LIMIT ? OFFSET ?
-            """,  # noqa: S608
-            params,
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    conn = await get_conn()
+    cursor = await conn.execute(
+        f"""
+        SELECT DISTINCT jp.*
+        FROM job_postings jp
+        {join}
+        {where}
+        ORDER BY jp.ingested_at DESC
+        LIMIT ? OFFSET ?
+        """,  # noqa: S608
+        params,
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -319,49 +358,48 @@ async def get_postings_due_for_liveness_check(
     - ingested at least min_age_hours ago (avoid probing brand-new listings)
     - never checked OR last_checked_at is older than recheck_interval_hours
     """
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT id, source, job_id, url
-            FROM job_postings
-            WHERE is_active = 1
-              AND ingested_at <= datetime('now', ? || ' hours')
-              AND (
-                    last_checked_at IS NULL
-                    OR last_checked_at <= datetime('now', ? || ' hours')
-              )
-            ORDER BY last_checked_at ASC NULLS FIRST
-            LIMIT ?
-            """,
-            (f"-{min_age_hours}", f"-{recheck_interval_hours}", batch_size),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    conn = await get_conn()
+    cursor = await conn.execute(
+        """
+        SELECT id, source, job_id, url
+        FROM job_postings
+        WHERE is_active = 1
+          AND ingested_at <= datetime('now', ? || ' hours')
+          AND (
+                last_checked_at IS NULL
+                OR last_checked_at <= datetime('now', ? || ' hours')
+          )
+        ORDER BY last_checked_at ASC NULLS FIRST
+        LIMIT ?
+        """,
+        (f"-{min_age_hours}", f"-{recheck_interval_hours}", batch_size),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
 
 
 async def mark_job_inactive(posting_id: int) -> None:
     """Mark a posting as expired (is_active = 0) and update last_checked_at."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            """
-            UPDATE job_postings
-            SET is_active = 0, last_checked_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (posting_id,),
-        )
-        await db.commit()
+    conn = await get_conn()
+    await conn.execute(
+        """
+        UPDATE job_postings
+        SET is_active = 0, last_checked_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (posting_id,),
+    )
+    await conn.commit()
 
 
 async def touch_liveness_check(posting_id: int) -> None:
     """Record that a posting was checked and is still active."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "UPDATE job_postings SET last_checked_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (posting_id,),
-        )
-        await db.commit()
+    conn = await get_conn()
+    await conn.execute(
+        "UPDATE job_postings SET last_checked_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (posting_id,),
+    )
+    await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -369,22 +407,26 @@ async def touch_liveness_check(posting_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _parse_pref_row(row: aiosqlite.Row) -> dict:
+    """Convert a user_preferences row to a dict with JSON fields decoded."""
+    data = dict(row)
+    data["companies"] = json.loads(data["companies"])
+    data["disciplines"] = json.loads(data.get("disciplines") or "[]")
+    data["keywords"] = json.loads(data.get("keywords") or "[]")
+    return data
+
+
 async def get_user_prefs(user_id: str) -> dict | None:
     """Return the user's preferences as a plain dict, or None if not set."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM user_preferences WHERE user_id = ?",
-            (user_id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        data = dict(row)
-        data["companies"] = json.loads(data["companies"])
-        data["disciplines"] = json.loads(data.get("disciplines") or "[]")
-        data["keywords"] = json.loads(data.get("keywords") or "[]")
-        return data
+    conn = await get_conn()
+    cursor = await conn.execute(
+        "SELECT * FROM user_preferences WHERE user_id = ?",
+        (user_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    return _parse_pref_row(row)
 
 
 async def upsert_user_prefs(user_id: str, **kwargs: Any) -> None:
@@ -400,19 +442,19 @@ async def upsert_user_prefs(user_id: str, **kwargs: Any) -> None:
         if col in kwargs and not isinstance(kwargs[col], str):
             kwargs[col] = json.dumps(kwargs[col])
 
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)",
-            (user_id,),
+    conn = await get_conn()
+    await conn.execute(
+        "INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)",
+        (user_id,),
+    )
+    if kwargs:
+        set_clause = ", ".join(f"{col} = ?" for col in kwargs)
+        set_clause += ", updated_at = CURRENT_TIMESTAMP"
+        await conn.execute(
+            f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?",  # noqa: S608
+            (*kwargs.values(), user_id),
         )
-        if kwargs:
-            set_clause = ", ".join(f"{col} = ?" for col in kwargs)
-            set_clause += ", updated_at = CURRENT_TIMESTAMP"
-            await db.execute(
-                f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?",  # noqa: S608
-                (*kwargs.values(), user_id),
-            )
-        await db.commit()
+    await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -422,14 +464,13 @@ async def upsert_user_prefs(user_id: str, **kwargs: Any) -> None:
 
 async def get_user_filter_rules(user_id: str) -> list[dict]:
     """Return all filter rules for a user as a list of dicts."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM user_filter_rules WHERE user_id = ? ORDER BY id",
-            (user_id,),
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    conn = await get_conn()
+    cursor = await conn.execute(
+        "SELECT * FROM user_filter_rules WHERE user_id = ? ORDER BY id",
+        (user_id,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
 
 
 async def add_user_filter_rule(user_id: str, role_type: str, location_scope: str) -> int:
@@ -438,16 +479,16 @@ async def add_user_filter_rule(user_id: str, role_type: str, location_scope: str
     Returns the new rule's id.
     """
     await upsert_user_prefs(user_id)  # ensure parent row exists
-    async with aiosqlite.connect(_DB_PATH) as db:
-        cursor = await db.execute(
-            """
-            INSERT INTO user_filter_rules (user_id, role_type, location_scope)
-            VALUES (?, ?, ?)
-            """,
-            (user_id, role_type, location_scope),
-        )
-        await db.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+    conn = await get_conn()
+    cursor = await conn.execute(
+        """
+        INSERT INTO user_filter_rules (user_id, role_type, location_scope)
+        VALUES (?, ?, ?)
+        """,
+        (user_id, role_type, location_scope),
+    )
+    await conn.commit()
+    return cursor.lastrowid  # type: ignore[return-value]
 
 
 async def remove_user_filter_rule(rule_id: int, user_id: str) -> bool:
@@ -455,59 +496,51 @@ async def remove_user_filter_rule(rule_id: int, user_id: str) -> bool:
 
     Returns True if a row was deleted, False if not found.
     """
-    async with aiosqlite.connect(_DB_PATH) as db:
-        cursor = await db.execute(
-            "DELETE FROM user_filter_rules WHERE id = ? AND user_id = ?",
-            (rule_id, user_id),
-        )
-        await db.commit()
-        return cursor.rowcount > 0
+    conn = await get_conn()
+    cursor = await conn.execute(
+        "DELETE FROM user_filter_rules WHERE id = ? AND user_id = ?",
+        (rule_id, user_id),
+    )
+    await conn.commit()
+    return cursor.rowcount > 0
 
 
 async def clear_user_filter_rules(user_id: str) -> None:
     """Delete all filter rules for a user (used before replacing with a fresh set)."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "DELETE FROM user_filter_rules WHERE user_id = ?",
-            (user_id,),
-        )
-        await db.commit()
+    conn = await get_conn()
+    await conn.execute(
+        "DELETE FROM user_filter_rules WHERE user_id = ?",
+        (user_id,),
+    )
+    await conn.commit()
 
 
 async def get_users_due_for_alert() -> list[dict]:
     """Return users with dm_enabled=1 whose next alert window has passed."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            """
-            SELECT * FROM user_preferences
-            WHERE dm_enabled = 1
-              AND (
-                last_alerted_at IS NULL
-                OR datetime(last_alerted_at, '+' || alert_interval_minutes || ' minutes')
-                   <= datetime('now')
-              )
-            """
-        )
-        rows = await cursor.fetchall()
-        result = []
-        for row in rows:
-            data = dict(row)
-            data["companies"] = json.loads(data["companies"])
-            data["disciplines"] = json.loads(data.get("disciplines") or "[]")
-            data["keywords"] = json.loads(data.get("keywords") or "[]")
-            result.append(data)
-        return result
+    conn = await get_conn()
+    cursor = await conn.execute(
+        """
+        SELECT * FROM user_preferences
+        WHERE dm_enabled = 1
+          AND (
+            last_alerted_at IS NULL
+            OR datetime(last_alerted_at, '+' || alert_interval_minutes || ' minutes')
+               <= datetime('now')
+          )
+        """
+    )
+    rows = await cursor.fetchall()
+    return [_parse_pref_row(row) for row in rows]
 
 
 async def update_last_alerted(user_id: str) -> None:
     """Stamp the current time as the last alert sent time for a user."""
-    async with aiosqlite.connect(_DB_PATH) as db:
-        await db.execute(
-            "UPDATE user_preferences SET last_alerted_at = CURRENT_TIMESTAMP WHERE user_id = ?",
-            (user_id,),
-        )
-        await db.commit()
+    conn = await get_conn()
+    await conn.execute(
+        "UPDATE user_preferences SET last_alerted_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+        (user_id,),
+    )
+    await conn.commit()
 
 
 async def query_jobs_for_user(
@@ -598,17 +631,16 @@ async def query_jobs_for_user(
     params.append(limit)
     params.append(offset)
 
-    async with aiosqlite.connect(_DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            f"""
-            SELECT DISTINCT jp.*
-            FROM job_postings jp
-            {where}
-            ORDER BY jp.ingested_at DESC
-            LIMIT ? OFFSET ?
-            """,  # noqa: S608
-            params,
-        )
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+    conn = await get_conn()
+    cursor = await conn.execute(
+        f"""
+        SELECT DISTINCT jp.*
+        FROM job_postings jp
+        {where}
+        ORDER BY jp.ingested_at DESC
+        LIMIT ? OFFSET ?
+        """,  # noqa: S608
+        params,
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]

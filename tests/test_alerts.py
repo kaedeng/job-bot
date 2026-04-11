@@ -6,9 +6,9 @@ from unittest.mock import patch
 from bot.alerts import (
     _AlertSetup,
     _build_summary,
-    _interval_display,
     _is_quiet_time,
     _loc_display,
+    interval_display,
 )
 
 # ─── _is_quiet_time ───────────────────────────────────────────────────────────
@@ -113,27 +113,27 @@ class TestLocDisplay:
         assert _loc_display(self._setup("worldwide")) == "Anywhere worldwide"
 
 
-# ─── _interval_display ────────────────────────────────────────────────────────
+# ─── interval_display ────────────────────────────────────────────────────────
 
 
 class TestIntervalDisplay:
     def test_1_minute(self):
-        assert _interval_display(1) == "1 minute (testing)"
+        assert interval_display(1) == "1 minute (testing)"
 
     def test_30_minutes(self):
-        assert _interval_display(30) == "every 30 minutes"
+        assert interval_display(30) == "every 30 minutes"
 
     def test_60_minutes(self):
-        assert _interval_display(60) == "every hour"
+        assert interval_display(60) == "every hour"
 
     def test_120_minutes(self):
-        assert _interval_display(120) == "every 2 hours"
+        assert interval_display(120) == "every 2 hours"
 
     def test_480_minutes(self):
-        assert _interval_display(480) == "every 8 hours"
+        assert interval_display(480) == "every 8 hours"
 
     def test_1440_minutes(self):
-        assert _interval_display(1440) == "once a day"
+        assert interval_display(1440) == "once a day"
 
 
 # ─── _build_summary ───────────────────────────────────────────────────────────

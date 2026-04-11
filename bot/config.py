@@ -5,14 +5,21 @@ from typing import Any, Tuple, Type
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, PydanticBaseSettingsSource
 
-_SLUG_FIELDS = frozenset({"greenhouse_slugs", "lever_slugs", "ashby_slugs"})
+_COMMA_SEP_FIELDS = frozenset(
+    {
+        "greenhouse_slugs",
+        "lever_slugs",
+        "ashby_slugs",
+        "custom_scrapers",
+    }
+)
 
 
 class _CommaSepDotEnv(DotEnvSettingsSource):
     def prepare_field_value(
         self, field_name: str, field: FieldInfo, value: Any, value_is_complex: bool
     ) -> Any:
-        if field_name in _SLUG_FIELDS and isinstance(value, str):
+        if field_name in _COMMA_SEP_FIELDS and isinstance(value, str):
             return [s.strip() for s in value.split(",") if s.strip()]
         return super().prepare_field_value(field_name, field, value, value_is_complex)
 
@@ -33,11 +40,10 @@ class Settings(BaseSettings):
 
     db_path: str = "jobs.db"
 
-    meta_enabled: bool = False
-    meta_poll_interval_minutes: int = 30
-
-    amazon_enabled: bool = False
-    amazon_poll_interval_minutes: int = 30
+    # Custom scrapers (single-company, proprietary APIs)
+    # Comma-separated names matching keys in scrapers.custom.REGISTRY
+    custom_scrapers: list[str] = []
+    custom_scraper_interval_minutes: int = 30
 
     @classmethod
     def settings_customise_sources(

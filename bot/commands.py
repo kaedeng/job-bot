@@ -11,29 +11,16 @@ from bot.filters import classify_job, is_tech_job, passes_filter
 from bot.models import Job
 from bot.scrapers import ashby, greenhouse, lever
 
+# Lookup for /scout platform dispatch
+_PLATFORM_SCRAPERS = {
+    "greenhouse": greenhouse.scrape,
+    "lever": lever.scrape,
+    "ashby": ashby.scrape,
+}
+
 logger = logging.getLogger(__name__)
 
 MAX_DISPLAY = 10  # embeds shown inline; Discord allows up to 10 per message
-
-
-def _build_embed(row: dict) -> discord.Embed:
-    location = row["location_raw"] or "Unknown"
-    tag = ""
-    if row["is_intern"]:
-        tag = "🎓 Intern"
-    elif row["is_new_grad"]:
-        tag = "🆕 New Grad"
-
-    embed = discord.Embed(
-        title=f"{row['title']} — {row['company']}",
-        url=row["url"],
-        color=0x5865F2,
-    )
-    embed.add_field(name="Location", value=location, inline=True)
-    if tag:
-        embed.add_field(name="Type", value=tag, inline=True)
-    embed.set_footer(text=f"via {row['source']} • ingested {row['ingested_at'][:10]}")
-    return embed
 
 
 def _fmt_csv(val: str) -> str:
@@ -94,7 +81,7 @@ class QueryView(discord.ui.View):
             )
             return
 
-        embeds = [_build_embed(r) for r in rows]
+        embeds = [alerts.build_db_row_embed(r) for r in rows]
         page = new_offset // MAX_DISPLAY + 1
         header = f"Page {page} — {len(rows)} result(s) for {self._filter_str}:"
         new_view = QueryView(self._params, new_offset, has_more, self._filter_str)
@@ -178,7 +165,7 @@ def register(tree: app_commands.CommandTree) -> None:
             await interaction.followup.send("No matching jobs found. Try broadening your search.")
             return
 
-        embeds = [_build_embed(r) for r in rows]
+        embeds = [alerts.build_db_row_embed(r) for r in rows]
         season_name = season.name if season else None
         filter_str = _build_filter_str(keyword, company, role, discipline, state, season_name)
         header = f"Showing {len(rows)} result(s) for {filter_str}:"
@@ -221,13 +208,9 @@ def register(tree: app_commands.CommandTree) -> None:
         await interaction.response.defer()
 
         slug = company.strip().lower()
+        scrape_fn = _PLATFORM_SCRAPERS[platform.value]
         async with httpx.AsyncClient(timeout=20) as client:
-            if platform.value == "greenhouse":
-                jobs = await greenhouse.scrape(slug, client)
-            elif platform.value == "lever":
-                jobs = await lever.scrape(slug, client)
-            else:
-                jobs = await ashby.scrape(slug, client)
+            jobs = await scrape_fn(slug, client)
 
         if not jobs:
             await interaction.followup.send(
@@ -303,15 +286,7 @@ def register(tree: app_commands.CommandTree) -> None:
             return
 
         status = "🟢 Active" if prefs["dm_enabled"] else "🔴 Paused"
-        mins = prefs["alert_interval_minutes"]
-        if mins < 60:
-            interval_str = f"every {mins} minutes"
-        elif mins == 60:
-            interval_str = "every hour"
-        elif mins < 1440:
-            interval_str = f"every {mins // 60} hours"
-        else:
-            interval_str = "once a day"
+        interval_str = alerts.interval_display(prefs["alert_interval_minutes"])
 
         disciplines = prefs.get("disciplines") or []
         disc_str = (
@@ -451,8 +426,8 @@ def register(tree: app_commands.CommandTree) -> None:
 
     @tree.command(name="health", description="Show scraper health and failure counts")
     async def health(interaction: discord.Interaction) -> None:
-        threshold = scheduler._FAILURE_ALERT_THRESHOLD
-        failures = scheduler._scraper_failures
+        threshold = scheduler.get_failure_threshold()
+        failures = scheduler.get_health_status()
 
         lines: list[str] = []
         any_degraded = False

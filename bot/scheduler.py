@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import discord
 import httpx
@@ -19,7 +20,7 @@ from bot.filters import (
 from bot.models import Job
 from bot.notifier import notify
 from bot.scrapers import ashby, greenhouse, lever, simplify
-from bot.scrapers.custom import amazon
+from bot.scrapers.custom import REGISTRY as _CUSTOM_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +28,10 @@ logger = logging.getLogger(__name__)
 _channel: discord.TextChannel | None = None
 _bot: discord.Client | None = None
 
-# Health tracking: consecutive failure counts per scraper
+# Health tracking: consecutive failure counts per scraper (auto-populated)
 _FAILURE_ALERT_THRESHOLD = 3
 _scraper_failures: dict[str, int] = {
-    "greenhouse": 0,
-    "lever": 0,
-    "ashby": 0,
-    "simplify": 0,
-    "amazon": 0,
+    name: 0 for name in ("greenhouse", "lever", "ashby", "simplify", *_CUSTOM_REGISTRY)
 }
 
 
@@ -56,6 +53,19 @@ def _record_failure(scraper: str, exc: BaseException) -> None:
     _scraper_failures[scraper] = _scraper_failures.get(scraper, 0) + 1
     count = _scraper_failures[scraper]
     logger.error("%s scraper failed (consecutive failures: %d): %s", scraper, count, exc)
+
+
+def get_health_status() -> dict[str, int]:
+    """Return a snapshot of consecutive failure counts per scraper.
+
+    Public API for commands — avoids reaching into private module globals.
+    """
+    return dict(_scraper_failures)
+
+
+def get_failure_threshold() -> int:
+    """Return the consecutive-failure count that triggers a health alert."""
+    return _FAILURE_ALERT_THRESHOLD
 
 
 async def _maybe_alert_health() -> None:
@@ -84,11 +94,8 @@ async def _process_jobs(jobs: list[Job]) -> None:
     # Pre-filter to tech-relevant roles before touching the DB
     cs_jobs = [j for j in jobs if is_tech_job(j)]
 
-    # Determine which CS jobs are new (not yet in job_postings)
-    new_cs_jobs: list[Job] = []
-    for job in cs_jobs:
-        if not await db.is_seen(job.source, job.id):
-            new_cs_jobs.append(job)
+    # Batch dedup: single query instead of N individual lookups
+    new_cs_jobs = await db.filter_unseen(cs_jobs)
 
     # Persist all new CS jobs (parse_location runs inside store_jobs_batch)
     if new_cs_jobs:
@@ -103,46 +110,36 @@ async def _process_jobs(jobs: list[Job]) -> None:
     await notify(to_notify, _channel)
 
 
-async def poll_greenhouse() -> None:
+async def _poll_platform(
+    name: str,
+    slugs: list[str],
+    scrape_fn: Any,
+    timeout: int = 20,
+) -> None:
+    """Generic slug-based poll: iterate slugs, scrape, process, track health."""
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             all_jobs: list[Job] = []
-            for slug in settings.greenhouse_slugs:
-                all_jobs.extend(await greenhouse.scrape(slug, client))
+            for slug in slugs:
+                all_jobs.extend(await scrape_fn(slug, client))
                 await asyncio.sleep(1)  # be polite
             await _process_jobs(all_jobs)
-        _record_success("greenhouse")
+        _record_success(name)
     except Exception as exc:
-        _record_failure("greenhouse", exc)
+        _record_failure(name, exc)
         await _maybe_alert_health()
+
+
+async def poll_greenhouse() -> None:
+    await _poll_platform("greenhouse", settings.greenhouse_slugs, greenhouse.scrape)
 
 
 async def poll_lever() -> None:
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            all_jobs: list[Job] = []
-            for slug in settings.lever_slugs:
-                all_jobs.extend(await lever.scrape(slug, client))
-                await asyncio.sleep(1)
-            await _process_jobs(all_jobs)
-        _record_success("lever")
-    except Exception as exc:
-        _record_failure("lever", exc)
-        await _maybe_alert_health()
+    await _poll_platform("lever", settings.lever_slugs, lever.scrape)
 
 
 async def poll_ashby() -> None:
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            all_jobs: list[Job] = []
-            for slug in settings.ashby_slugs:
-                all_jobs.extend(await ashby.scrape(slug, client))
-                await asyncio.sleep(1)
-            await _process_jobs(all_jobs)
-        _record_success("ashby")
-    except Exception as exc:
-        _record_failure("ashby", exc)
-        await _maybe_alert_health()
+    await _poll_platform("ashby", settings.ashby_slugs, ashby.scrape)
 
 
 async def poll_simplify() -> None:
@@ -167,17 +164,22 @@ async def poll_simplify() -> None:
         await _maybe_alert_health()
 
 
-async def poll_amazon() -> None:
-    if not settings.amazon_enabled:
-        return
+async def _poll_custom(name: str) -> None:
+    """Poll a custom scraper by registry name."""
+    info = _CUSTOM_REGISTRY[name]
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            jobs = await amazon.scrape(client)
+        async with httpx.AsyncClient(timeout=info.timeout) as client:
+            jobs = await info.scrape(client)
             await _process_jobs(jobs)
-        _record_success("amazon")
+        _record_success(name)
     except Exception as exc:
-        _record_failure("amazon", exc)
+        _record_failure(name, exc)
         await _maybe_alert_health()
+
+
+def run_custom_scrapers() -> list[Any]:
+    """Return a list of coroutines for all enabled custom scrapers (for asyncio.gather)."""
+    return [_poll_custom(name) for name in settings.custom_scrapers if name in _CUSTOM_REGISTRY]
 
 
 async def _check_url_live(client: httpx.AsyncClient, url: str) -> bool:
@@ -268,13 +270,21 @@ def start_scheduler() -> AsyncIOScheduler:
         minutes=settings.simplify_poll_interval_minutes,
         id="simplify",
     )
-    if settings.amazon_enabled:
+
+    # Custom scrapers — driven by CUSTOM_SCRAPERS env var + registry
+    for name in settings.custom_scrapers:
+        if name not in _CUSTOM_REGISTRY:
+            logger.warning("Unknown custom scraper %r in CUSTOM_SCRAPERS — skipping", name)
+            continue
+        info = _CUSTOM_REGISTRY[name]
+        interval_mins = settings.custom_scraper_interval_minutes or info.default_interval_minutes
         scheduler.add_job(
-            poll_amazon,
+            _poll_custom,
             "interval",
-            minutes=settings.amazon_poll_interval_minutes,
-            id="amazon",
-            next_run_time=None,
+            args=[name],
+            minutes=interval_mins,
+            id=name,
+            next_run_time=None,  # stagger: first run happens in on_ready
         )
 
     # User DM alerts — checked every 2 min; actual delivery respects per-user intervals

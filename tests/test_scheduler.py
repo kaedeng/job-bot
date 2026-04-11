@@ -25,6 +25,39 @@ def _resp(status: int, method: str = "GET") -> httpx.Response:
 
 
 # ---------------------------------------------------------------------------
+# get_health_status / get_failure_threshold
+# ---------------------------------------------------------------------------
+
+
+class TestHealthAPI:
+    def test_get_health_status_returns_dict(self):
+        status = scheduler.get_health_status()
+        assert isinstance(status, dict)
+        # Should contain at least the built-in platform scrapers
+        for name in ("greenhouse", "lever", "ashby", "simplify"):
+            assert name in status
+            assert isinstance(status[name], int)
+
+    def test_get_health_status_is_a_copy(self):
+        status = scheduler.get_health_status()
+        status["greenhouse"] = 999
+        # Original should be unaffected
+        assert scheduler._scraper_failures["greenhouse"] != 999
+
+    def test_get_failure_threshold(self):
+        threshold = scheduler.get_failure_threshold()
+        assert isinstance(threshold, int)
+        assert threshold == scheduler._FAILURE_ALERT_THRESHOLD
+
+    def test_health_tracks_success_and_failure(self):
+        original = scheduler._scraper_failures.get("greenhouse", 0)
+        scheduler._record_failure("greenhouse", RuntimeError("test"))
+        assert scheduler.get_health_status()["greenhouse"] == original + 1
+        scheduler._record_success("greenhouse")
+        assert scheduler.get_health_status()["greenhouse"] == 0
+
+
+# ---------------------------------------------------------------------------
 # _check_url_live
 # ---------------------------------------------------------------------------
 
@@ -77,10 +110,12 @@ class TestCheckUrlLive:
 
 @pytest.fixture
 async def liveness_db(tmp_path, monkeypatch):
+    await db.close()
     path = str(tmp_path / "liveness.db")
     monkeypatch.setattr(db, "_DB_PATH", path)
     await db.init_db()
-    return path
+    yield path
+    await db.close()
 
 
 async def _insert(db_path: str, job_id: str, url: str, ingested_ago_hours: float = 2) -> int:

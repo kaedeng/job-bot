@@ -1,4 +1,5 @@
-from bot.commands import _build_filter_str, _fmt_csv
+from bot.commands import _PLATFORM_SCRAPERS, _build_filter_str, _fmt_csv
+from bot.scrapers import ashby, greenhouse, lever
 
 
 class TestFmtCsv:
@@ -67,3 +68,18 @@ class TestBuildFilterStr:
     def test_csv_company(self):
         result = _build_filter_str(None, "stripe,ramp", None, None, None, None)
         assert "stripe, ramp" in result
+
+
+# ---------------------------------------------------------------------------
+# _PLATFORM_SCRAPERS
+# ---------------------------------------------------------------------------
+
+
+class TestPlatformScrapers:
+    def test_contains_all_platforms(self):
+        assert set(_PLATFORM_SCRAPERS) == {"greenhouse", "lever", "ashby"}
+
+    def test_maps_to_correct_scrape_functions(self):
+        assert _PLATFORM_SCRAPERS["greenhouse"] is greenhouse.scrape
+        assert _PLATFORM_SCRAPERS["lever"] is lever.scrape
+        assert _PLATFORM_SCRAPERS["ashby"] is ashby.scrape
