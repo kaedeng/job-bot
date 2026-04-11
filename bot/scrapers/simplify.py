@@ -20,7 +20,16 @@ SOURCES = {
 }
 
 
-async def scrape(client: httpx.AsyncClient) -> list[Job]:
+async def scrape(
+    client: httpx.AsyncClient,
+    companies: frozenset[str] | None = None,
+) -> list[Job]:
+    """Scrape Simplify intern and new-grad listings.
+
+    Args:
+        companies: Optional set of lowercase company slugs to restrict results to.
+                   When None, all active listings are returned.
+    """
     all_jobs: list[Job] = []
     for source_name, url in SOURCES.items():
         try:
@@ -31,17 +40,23 @@ async def scrape(client: httpx.AsyncClient) -> list[Job]:
             continue
 
         for item in resp.json():
+            if not item.get("active", True):
+                continue
+
+            company_name: str = item.get("company_name", "")
+            if companies is not None and company_name.lower() not in companies:
+                continue
+
             locations = item.get("locations", [])
             location_str = ", ".join(locations) if locations else ""
-            apply_url = item.get("url", "")
 
             all_jobs.append(
                 Job(
                     id=str(item.get("id", "")),
                     title=item.get("title", ""),
-                    company=item.get("company_name", ""),
+                    company=company_name,
                     location=location_str,
-                    url=apply_url,
+                    url=item.get("url", ""),
                     source=source_name,
                 )
             )

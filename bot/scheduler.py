@@ -74,8 +74,16 @@ async def poll_ashby() -> None:
 
 
 async def poll_simplify() -> None:
+    companies = frozenset(
+        s.lower()
+        for s in (
+            *settings.greenhouse_slugs,
+            *settings.lever_slugs,
+            *settings.ashby_slugs,
+        )
+    ) or None  # None = no filter if config is empty
     async with httpx.AsyncClient(timeout=30) as client:
-        jobs = await simplify.scrape(client)
+        jobs = await simplify.scrape(client, companies=companies)
         await _process_jobs(jobs)
 
 

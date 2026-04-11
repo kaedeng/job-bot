@@ -37,6 +37,12 @@ class TestTitleInclude:
     def test_mid_level(self):
         assert not passes_filter(_job("Software Engineer II"))
 
+    def test_non_swe_intern_rejected(self):
+        assert not passes_filter(_job("Marketing Intern"))
+
+    def test_non_swe_new_grad_rejected(self):
+        assert not passes_filter(_job("New Grad - Sales Associate"))
+
 
 class TestTitleExclude:
     def test_senior(self):

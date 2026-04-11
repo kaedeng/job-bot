@@ -6,11 +6,23 @@ from bot.models import Job
 
 # --- Title filters ---
 
-TITLE_INCLUDE = re.compile(
-    r"\b("
-    r"intern|internship|new\s*grad|university\s*grad|entry[\s-]*level"
-    r"|swe\s*i\b|software\s*engineer\s*i\b|l3"
-    r")\b",
+# Generic level/stage terms that don't imply discipline on their own
+_LEVEL_TERMS = re.compile(
+    r"\b(intern|internship|new\s*grad|university\s*grad|entry[\s-]*level)\b",
+    re.IGNORECASE,
+)
+
+# Already discipline-specific — no extra check needed
+_SWE_LEVEL_TERMS = re.compile(
+    r"\bswe\s*i\b|\bsoftware\s*engineer\s*i\b|\bl3\b",
+    re.IGNORECASE,
+)
+
+# Must appear alongside a generic level term to confirm SWE discipline
+DISCIPLINE_INCLUDE = re.compile(
+    r"\b(software|swe|engineer(ing)?|developer|dev|data|ml"
+    r"|machine\s*learning|systems|platform|infrastructure"
+    r"|backend|frontend|full[\s-]?stack|devops|security|cloud)\b",
     re.IGNORECASE,
 )
 
@@ -75,7 +87,12 @@ def passes_filter(job: Job) -> bool:
     """Return True if the job matches entry-level/intern SWE criteria in the US."""
     if TITLE_EXCLUDE.search(job.title):
         return False
-    if not TITLE_INCLUDE.search(job.title):
+    if _SWE_LEVEL_TERMS.search(job.title):
+        pass  # already discipline-specific (e.g. "Software Engineer I")
+    elif _LEVEL_TERMS.search(job.title):
+        if not DISCIPLINE_INCLUDE.search(job.title):
+            return False  # e.g. "Marketing Intern" — not SWE
+    else:
         return False
     if not _is_us_location(job.location):
         return False
