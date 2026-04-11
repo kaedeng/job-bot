@@ -32,11 +32,13 @@ pip install -e .
 2. Click **New Application**, give it a name
 3. Go to **Bot** in the sidebar
 4. Click **Reset Token** and copy your bot token
-5. Under **Privileged Gateway Intents**, you don't need any — defaults are fine
+5. Under **Privileged Gateway Intents**, enable **Server Members Intent** — required to look up users for DM delivery
 6. Go to **OAuth2 > URL Generator**
-7. Select scopes: **bot**
+7. Select scopes: **bot**, **applications.commands**
 8. Select permissions: **Send Messages**, **Embed Links**
 9. Copy the generated URL, open it, and add the bot to your server
+
+> **DM note:** Discord bots can only DM users who share a server with the bot. Users must also have **Allow direct messages from server members** enabled in their Discord privacy settings (Settings > Privacy & Safety). If this is off, the DM will silently fail with a 403.
 
 ### 3. Get the channel ID
 
