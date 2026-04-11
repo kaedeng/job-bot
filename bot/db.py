@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS user_filter_rules (
     location_scope TEXT      NOT NULL,
     created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_job_postings_active_ingested ON job_postings(is_active, ingested_at);
+CREATE INDEX IF NOT EXISTS idx_job_postings_last_checked    ON job_postings(last_checked_at);
+CREATE INDEX IF NOT EXISTS idx_job_locations_posting_id     ON job_locations(posting_id);
+CREATE INDEX IF NOT EXISTS idx_job_locations_country        ON job_locations(country);
+CREATE INDEX IF NOT EXISTS idx_job_locations_state          ON job_locations(state);
+CREATE INDEX IF NOT EXISTS idx_user_filter_rules_user_id    ON user_filter_rules(user_id);
 """
 
 

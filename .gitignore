@@ -36,3 +36,13 @@ Thumbs.db
 
 # Claude
 .claude
+
+*.db-shm
+*.db-wal
+*.sqlite
+*.bat
+*.exp
+*.pdb
+*.dll
+*.a
+*.so

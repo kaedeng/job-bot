@@ -6,3 +6,5 @@ __pycache__/
 jobs.db
 .git/
 .gitignore
+*.db-shm
+*.db-wal

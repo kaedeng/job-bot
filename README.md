@@ -266,7 +266,7 @@ Additive filter tuples per user. Each row defines one independent filter — a u
 | `id`             | INTEGER PK | Auto-incrementing row ID                                 |
 | `user_id`        | TEXT       | Discord snowflake — FK to `user_preferences`             |
 | `role_type`      | TEXT       | `intern`, `new_grad`, or `entry_level`                   |
-| `location_scope` | TEXT       | `us`, `remote`, `country:XX`, `state:XX`, or `city:Name` |
+| `location_scope` | TEXT       | `us`, `remote`, `country:XX`, `state:XX`, or `worldwide` |
 | `created_at`     | TIMESTAMP  | Row creation time                                        |
 
 **Example:** a user who wants internships anywhere in the US _and_ entry-level roles only in Colorado would have two rows:
