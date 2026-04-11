@@ -386,6 +386,8 @@ Estimated cost: ~$5/month for a small persistent instance.
 - [ ] **Job expiry** — Edit or mark posted embeds when a listing goes dead (HTTP 404 or removed from the board).
 - [x] **Central jobs database** — Full job records in `job_postings` (title, company, location, URL, source, posted date, discipline, is_intern, is_new_grad, is_remote) with a `job_locations` child table for multi-location postings. Replaces the old `seen_jobs` dedup table.
 - [ ] **Liveness verification** — Periodically re-check stored postings to confirm they're still active before surfacing them to new users.
+- [ ] **Company + platform search** — CLI or slash command that takes a company name and a platform (e.g. `greenhouse`, `lever`) and scrapes that specific combination on demand, bypassing the scheduler. Useful for spot-checking a company before adding it to `.env`.
+- [ ] **Description keyword extraction** — At ingestion time, strip common stop-words from the description using a large base vocabulary, then store the remaining domain-specific terms (e.g. `rust`, `kubernetes`, `verilog`, `react`) in a `job_keywords` table linked to `job_postings`. Enables keyword-based search and filtering without storing full description text.
 
 ### Scrapers & sources
 
