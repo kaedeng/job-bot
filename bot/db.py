@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
@@ -26,6 +27,7 @@ async def get_conn() -> aiosqlite.Connection:
     """Return the shared DB connection, creating it on first call."""
     global _conn
     if _conn is None:
+        Path(_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         _conn = await aiosqlite.connect(_DB_PATH)
         _conn.row_factory = aiosqlite.Row
         await _conn.execute("PRAGMA journal_mode=WAL")
