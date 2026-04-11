@@ -4,6 +4,7 @@ import logging
 
 import httpx
 
+from bot.company_names import resolve
 from bot.models import Job
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
             Job(
                 id=item["id"],
                 title=item["text"],
-                company=slug,
+                company=resolve(slug),
                 location=location,
                 url=item.get("hostedUrl", ""),
                 source="lever",

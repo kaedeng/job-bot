@@ -19,7 +19,7 @@ from bot.filters import (
 )
 from bot.models import Job
 from bot.notifier import notify
-from bot.scrapers import ashby, greenhouse, lever, simplify
+from bot.scrapers import ashby, greenhouse, lever, simplify, workday
 from bot.scrapers.custom import REGISTRY as _CUSTOM_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ _bot: discord.Client | None = None
 # Health tracking: consecutive failure counts per scraper (auto-populated)
 _FAILURE_ALERT_THRESHOLD = 3
 _scraper_failures: dict[str, int] = {
-    name: 0 for name in ("greenhouse", "lever", "ashby", "simplify", *_CUSTOM_REGISTRY)
+    name: 0 for name in ("greenhouse", "lever", "ashby", "simplify", "workday", *_CUSTOM_REGISTRY)
 }
 
 
@@ -140,6 +140,10 @@ async def poll_lever() -> None:
 
 async def poll_ashby() -> None:
     await _poll_platform("ashby", settings.ashby_slugs, ashby.scrape)
+
+
+async def poll_workday() -> None:
+    await _poll_platform("workday", settings.workday_slugs, workday.scrape)
 
 
 async def poll_simplify() -> None:
@@ -262,6 +266,13 @@ def start_scheduler() -> AsyncIOScheduler:
         "interval",
         minutes=interval,
         id="ashby",
+        next_run_time=None,
+    )
+    scheduler.add_job(
+        poll_workday,
+        "interval",
+        minutes=interval,
+        id="workday",
         next_run_time=None,
     )
     scheduler.add_job(

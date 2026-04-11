@@ -4,6 +4,7 @@ import logging
 
 import httpx
 
+from bot.company_names import resolve
 from bot.models import Job
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ async def scrape(slug: str, client: httpx.AsyncClient) -> list[Job]:
             Job(
                 id=str(item["id"]),
                 title=item["title"],
-                company=slug,
+                company=resolve(slug),
                 location=location,
                 url=item.get("absolute_url", ""),
                 source="greenhouse",

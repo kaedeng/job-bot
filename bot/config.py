@@ -10,6 +10,7 @@ _COMMA_SEP_FIELDS = frozenset(
         "greenhouse_slugs",
         "lever_slugs",
         "ashby_slugs",
+        "workday_slugs",
         "custom_scrapers",
     }
 )
@@ -51,6 +52,7 @@ class Settings(BaseSettings):
     greenhouse_slugs: list[str] = []
     lever_slugs: list[str] = []
     ashby_slugs: list[str] = []
+    workday_slugs: list[str] = []  # format: 'host:board', e.g. 'bloomberg.wd1:BloombergCareerSite'
 
     poll_interval_minutes: int = 10
     simplify_poll_interval_minutes: int = 30
