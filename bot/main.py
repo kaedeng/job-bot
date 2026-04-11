@@ -14,6 +14,8 @@ from bot.scheduler import (
     poll_greenhouse,
     poll_lever,
     poll_simplify,
+    poll_user_alerts,
+    set_bot,
     set_channel,
     start_scheduler,
 )
@@ -41,6 +43,7 @@ async def on_ready() -> None:
         return
 
     set_channel(channel)  # type: ignore[arg-type]
+    set_bot(bot)
 
     logger.info("Initializing database...")
     await init_db()
@@ -62,6 +65,9 @@ async def on_ready() -> None:
         poll_ashby(),
         poll_simplify(),
     )
+
+    # Immediately check if any users are due for an alert after the first scrape
+    await poll_user_alerts()
 
     # Then start the recurring scheduler
     start_scheduler()

@@ -591,6 +591,304 @@ class TestTouchLivenessCheck:
         assert all(p["id"] != posting_id for p in postings)
 
 
+# ---------------------------------------------------------------------------
+# clear_user_filter_rules
+# ---------------------------------------------------------------------------
+
+
+class TestClearUserFilterRules:
+    async def test_removes_all_rules_for_user(self, fresh_db):
+        await db.add_user_filter_rule("alice", "intern", "us")
+        await db.add_user_filter_rule("alice", "new_grad", "remote")
+        await db.clear_user_filter_rules("alice")
+        assert await db.get_user_filter_rules("alice") == []
+
+    async def test_does_not_affect_other_users(self, fresh_db):
+        await db.add_user_filter_rule("alice", "intern", "us")
+        await db.add_user_filter_rule("bob", "new_grad", "remote")
+        await db.clear_user_filter_rules("alice")
+        assert len(await db.get_user_filter_rules("bob")) == 1
+
+    async def test_clear_on_user_with_no_rules(self, fresh_db):
+        # Should not raise
+        await db.clear_user_filter_rules("nobody")
+        assert await db.get_user_filter_rules("nobody") == []
+
+
+# ---------------------------------------------------------------------------
+# get_users_due_for_alert / update_last_alerted
+# ---------------------------------------------------------------------------
+
+
+class TestGetUsersDueForAlert:
+    async def test_user_with_null_last_alerted_is_due(self, fresh_db):
+        await db.upsert_user_prefs("u1", dm_enabled=1, alert_interval_minutes=60)
+        users = await db.get_users_due_for_alert()
+        assert any(u["user_id"] == "u1" for u in users)
+
+    async def test_dm_disabled_user_not_returned(self, fresh_db):
+        await db.upsert_user_prefs("u2", dm_enabled=0, alert_interval_minutes=60)
+        users = await db.get_users_due_for_alert()
+        assert not any(u["user_id"] == "u2" for u in users)
+
+    async def test_user_past_interval_is_due(self, fresh_db):
+        await db.upsert_user_prefs("u3", dm_enabled=1, alert_interval_minutes=1)
+        # Manually backdate last_alerted_at by 2 minutes
+        async with aiosqlite.connect(fresh_db) as conn:
+            await conn.execute(
+                "UPDATE user_preferences SET last_alerted_at = datetime('now', '-2 minutes')"
+                " WHERE user_id = 'u3'"
+            )
+            await conn.commit()
+        users = await db.get_users_due_for_alert()
+        assert any(u["user_id"] == "u3" for u in users)
+
+    async def test_user_not_yet_due_is_excluded(self, fresh_db):
+        await db.upsert_user_prefs("u4", dm_enabled=1, alert_interval_minutes=120)
+        # Mark as alerted just now
+        await db.update_last_alerted("u4")
+        users = await db.get_users_due_for_alert()
+        assert not any(u["user_id"] == "u4" for u in users)
+
+    async def test_returned_prefs_deserialize_json_fields(self, fresh_db):
+        await db.upsert_user_prefs(
+            "u5",
+            dm_enabled=1,
+            disciplines=["swe"],
+            keywords=["rust"],
+            companies=["stripe"],
+        )
+        users = await db.get_users_due_for_alert()
+        u = next(u for u in users if u["user_id"] == "u5")
+        assert u["disciplines"] == ["swe"]
+        assert u["keywords"] == ["rust"]
+        assert u["companies"] == ["stripe"]
+
+
+class TestUpdateLastAlerted:
+    async def test_sets_last_alerted_at(self, fresh_db):
+        await db.upsert_user_prefs("u1")
+        await db.update_last_alerted("u1")
+        prefs = await db.get_user_prefs("u1")
+        assert prefs["last_alerted_at"] is not None
+
+    async def test_user_no_longer_due_after_update(self, fresh_db):
+        await db.upsert_user_prefs("u1", dm_enabled=1, alert_interval_minutes=60)
+        await db.update_last_alerted("u1")
+        users = await db.get_users_due_for_alert()
+        assert not any(u["user_id"] == "u1" for u in users)
+
+
+# ---------------------------------------------------------------------------
+# new user_preferences fields: disciplines / keywords
+# ---------------------------------------------------------------------------
+
+
+class TestUserPreferencesNewFields:
+    async def test_disciplines_default_empty_list(self, fresh_db):
+        await db.upsert_user_prefs("u1")
+        prefs = await db.get_user_prefs("u1")
+        assert prefs["disciplines"] == []
+
+    async def test_disciplines_stored_and_retrieved(self, fresh_db):
+        await db.upsert_user_prefs("u1", disciplines=["swe"])
+        prefs = await db.get_user_prefs("u1")
+        assert prefs["disciplines"] == ["swe"]
+
+    async def test_keywords_default_empty_list(self, fresh_db):
+        await db.upsert_user_prefs("u1")
+        prefs = await db.get_user_prefs("u1")
+        assert prefs["keywords"] == []
+
+    async def test_keywords_stored_and_retrieved(self, fresh_db):
+        await db.upsert_user_prefs("u1", keywords=["rust", "kubernetes"])
+        prefs = await db.get_user_prefs("u1")
+        assert prefs["keywords"] == ["rust", "kubernetes"]
+
+    async def test_both_fields_serialized_as_json(self, fresh_db):
+        import json
+
+        await db.upsert_user_prefs("u1", disciplines=["ee"], keywords=["fpga"])
+        async with aiosqlite.connect(fresh_db) as conn:
+            cursor = await conn.execute(
+                "SELECT disciplines, keywords FROM user_preferences WHERE user_id = 'u1'"
+            )
+            row = await cursor.fetchone()
+        assert json.loads(row[0]) == ["ee"]
+        assert json.loads(row[1]) == ["fpga"]
+
+
+# ---------------------------------------------------------------------------
+# query_jobs_for_user
+# ---------------------------------------------------------------------------
+
+
+class TestQueryJobsForUser:
+    async def test_returns_empty_when_no_rules(self, fresh_db):
+        await _store([_job()])
+        await db.upsert_user_prefs("u1")
+        # No filter rules added
+        assert await db.query_jobs_for_user("u1") == []
+
+    async def test_returns_empty_when_no_prefs(self, fresh_db):
+        await _store([_job()])
+        assert await db.query_jobs_for_user("nobody") == []
+
+    async def test_intern_us_rule_matches_intern_us_job(self, fresh_db):
+        await _store([_job(id="1", title="Software Engineer Intern", location="Austin, TX")])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+        assert rows[0]["job_id"] == "1"
+
+    async def test_new_grad_us_rule_matches_new_grad_job(self, fresh_db):
+        await _store([_job(id="1", title="New Grad Software Engineer", location="Seattle, WA")])
+        await db.add_user_filter_rule("u1", "new_grad", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+
+    async def test_intern_rule_does_not_match_new_grad(self, fresh_db):
+        await _store([_job(id="1", title="New Grad Software Engineer", location="Seattle, WA")])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        assert await db.query_jobs_for_user("u1") == []
+
+    async def test_multiple_rules_or_logic(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Austin, TX"),
+            _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
+        ])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        await db.add_user_filter_rule("u1", "new_grad", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 2
+
+    async def test_remote_scope_matches_remote_job(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Remote"),
+            _job(id="2", title="Software Engineer Intern", location="San Francisco, CA"),
+        ])
+        await db.add_user_filter_rule("u1", "intern", "remote")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+        assert rows[0]["is_remote"] == 1
+
+    async def test_state_scope_matches_correct_state(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Denver, CO"),
+            _job(id="2", title="Software Engineer Intern", location="Seattle, WA"),
+        ])
+        await db.add_user_filter_rule("u1", "intern", "state:CO")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+        assert rows[0]["location_raw"] == "Denver, CO"
+
+    async def test_multiple_state_rules_or_logic(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Denver, CO"),
+            _job(id="2", title="Software Engineer Intern", location="Seattle, WA"),
+            _job(id="3", title="Software Engineer Intern", location="Austin, TX"),
+        ])
+        await db.add_user_filter_rule("u1", "intern", "state:CO")
+        await db.add_user_filter_rule("u1", "intern", "state:WA")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 2
+        locs = {r["location_raw"] for r in rows}
+        assert "Denver, CO" in locs
+        assert "Seattle, WA" in locs
+
+    async def test_worldwide_scope_returns_all_matching(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Remote"),
+            _job(id="2", title="Software Engineer Intern", location="San Francisco, CA"),
+        ])
+        await db.add_user_filter_rule("u1", "intern", "worldwide")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 2
+
+    async def test_discipline_filter_applied_globally(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Austin, TX"),
+            _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
+        ])
+        await db.upsert_user_prefs("u1", disciplines=["swe"])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+        assert rows[0]["discipline"] == "swe"
+
+    async def test_keyword_filter_matches_title(self, fresh_db):
+        await _store([
+            _job(id="1", title="Python Backend Intern", location="Austin, TX"),
+            _job(id="2", title="React Frontend Intern", location="Austin, TX"),
+        ])
+        await db.upsert_user_prefs("u1", keywords=["python"])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+        assert "Python" in rows[0]["title"]
+
+    async def test_keyword_filter_matches_description(self, fresh_db):
+        await _store([
+            _job(id="1", title="Software Engineer Intern", location="Austin, TX",
+                 description="experience with kubernetes preferred"),
+            _job(id="2", title="Software Engineer Intern", location="Austin, TX",
+                 source="lever", description="no special requirements"),
+        ])
+        await db.upsert_user_prefs("u1", keywords=["kubernetes"])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+
+    async def test_company_filter(self, fresh_db):
+        await _store([
+            _job(id="1", company="stripe", location="San Francisco, CA"),
+            _job(id="2", company="ramp", location="New York, NY"),
+        ])
+        await db.upsert_user_prefs("u1", companies=["stripe"])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert len(rows) == 1
+        assert rows[0]["company"] == "stripe"
+
+    async def test_ingested_after_cutoff(self, fresh_db):
+        await _store([_job(id="1", title="Software Engineer Intern", location="Austin, TX")])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        # Use a future cutoff — no jobs after that
+        rows = await db.query_jobs_for_user("u1", ingested_after="2099-01-01 00:00:00")
+        assert rows == []
+
+    async def test_ingested_after_includes_newer_jobs(self, fresh_db):
+        await _store([_job(id="1", title="Software Engineer Intern", location="Austin, TX")])
+        await db.add_user_filter_rule("u1", "intern", "us")
+        # Cutoff in the past — should include the job
+        rows = await db.query_jobs_for_user("u1", ingested_after="2000-01-01 00:00:00")
+        assert len(rows) == 1
+
+    async def test_offset_pagination(self, fresh_db):
+        jobs = [
+            _job(id=str(i), title="Software Engineer Intern", location="Austin, TX",
+                 source="greenhouse" if i % 2 == 0 else "lever")
+            for i in range(5)
+        ]
+        await _store(jobs)
+        await db.add_user_filter_rule("u1", "intern", "us")
+        page1 = await db.query_jobs_for_user("u1", limit=3, offset=0)
+        page2 = await db.query_jobs_for_user("u1", limit=3, offset=3)
+        ids1 = {r["job_id"] for r in page1}
+        ids2 = {r["job_id"] for r in page2}
+        assert ids1.isdisjoint(ids2)
+        assert len(page1) == 3
+        assert len(page2) == 2
+
+    async def test_excludes_inactive_jobs(self, fresh_db):
+        posting_id = await _insert_posting(
+            fresh_db, job_id="dead", ingested_ago_hours=1, is_active=0
+        )
+        await db.add_user_filter_rule("u1", "intern", "us")
+        rows = await db.query_jobs_for_user("u1")
+        assert all(r["job_id"] != "dead" for r in rows)
+
+
 class TestQueryJobsExcludesInactive:
     async def test_inactive_job_hidden_from_query(self, fresh_db):
         # Store via normal path (is_active defaults to 1)

@@ -136,12 +136,13 @@ Two-stage filter:
 
 ### Scheduling
 
-| Source     | Interval | Notes                                             |
-| ---------- | -------- | ------------------------------------------------- |
-| Greenhouse | 10 min   | Configurable via `POLL_INTERVAL_MINUTES`          |
-| Lever      | 10 min   | Staggered start                                   |
-| Ashby      | 10 min   | Staggered start                                   |
-| Simplify   | 30 min   | Configurable via `SIMPLIFY_POLL_INTERVAL_MINUTES` |
+| Source        | Interval | Notes                                             |
+| ------------- | -------- | ------------------------------------------------- |
+| Greenhouse    | 10 min   | Configurable via `POLL_INTERVAL_MINUTES`          |
+| Lever         | 10 min   | Staggered start                                   |
+| Ashby         | 10 min   | Staggered start                                   |
+| Simplify      | 30 min   | Configurable via `SIMPLIFY_POLL_INTERVAL_MINUTES` |
+| User alerts   | 2 min    | Checks all users; delivers per each user's interval |
 
 Scrapers are staggered so they don't all fire at the same instant. Each individual slug request includes a 1-second delay to be polite to APIs.
 
@@ -154,6 +155,32 @@ Each new job appears as an embed with:
 - Direct link to the application page
 
 When many jobs are found in a single cycle, they're batched into messages of up to 10 embeds each.
+
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/query` | Search the jobs database with optional filters (keyword, company, role, discipline, state, season). Results are paginated with ← Prev / Next → buttons. |
+| `/scout <company> <platform>` | Live-scrape a company+platform on demand to spot-check a slug before adding it to `.env`. |
+| `/alert` | Open a 6-step DM wizard to set up personalised job alert notifications. |
+| `/alert-status` | View your current alert preferences (ephemeral). |
+| `/alert-off` | Pause DM alerts. |
+| `/alert-resume` | Re-enable paused alerts. |
+| `/alert-test` | Immediately trigger a test DM with your current matching jobs (all time). |
+| `/health` | Show scraper health and consecutive failure counts. |
+
+### Job Alert DMs
+
+Users can subscribe to personalised job alerts delivered via Discord DM. The `/alert` wizard collects:
+
+1. **Role types** — Internships, New Grad / Entry Level, or both
+2. **Discipline** — SWE, EE, or both
+3. **Location** — Anywhere in the US, Remote only, Specific US state(s) (e.g. `CO, WA`), Specific country (ISO code), or Anywhere worldwide
+4. **Check interval** — 1 min (testing) through once a day
+5. **Optional filters** — keyword(s) matching title/description, company name(s)
+6. **Optional quiet hours** — UTC time window during which no DMs are sent
+
+Preferences are stored in `user_preferences` + `user_filter_rules`. The scheduler checks every 2 minutes and delivers to any user whose interval has elapsed. New users receive only jobs from the last 24 hours to avoid a flood on first run. Results are paginated with a **Next →** / **← Prev** button.
 
 ### Liveness & Health Monitoring
 
@@ -193,6 +220,9 @@ Canonical record for every CS-relevant job returned by any scraper. Serves as bo
 | `is_new_grad`  | INTEGER    | `1` = classified as new-grad/entry-level, `0` = not, `NULL` = unclassified |
 | `is_remote`    | INTEGER    | `1` if any of the job's locations is remote                                |
 | `discipline`   | TEXT       | `swe`, `ee`, or `unknown` — classified from job title at ingestion         |
+| `description_text` | TEXT   | HTML-stripped description, max 5 000 chars (Greenhouse + Lever only)   |
+| `is_active`    | INTEGER    | `0` once a liveness check returns 404                                      |
+| `last_checked_at` | TIMESTAMP | Last liveness probe timestamp                                          |
 
 Unique constraint: `(source, job_id)`
 
@@ -221,6 +251,9 @@ Per-Discord-user notification and delivery settings. Filter logic lives in `user
 | `quiet_hours_start`      | TEXT        | NULL    | Quiet window start, e.g. `"22:00"` (NULL = disabled)       |
 | `quiet_hours_end`        | TEXT        | NULL    | Quiet window end, e.g. `"08:00"`                           |
 | `companies`              | TEXT (JSON) | `[]`    | Company slugs to follow (empty = all configured companies) |
+| `disciplines`            | TEXT (JSON) | `[]`    | `["swe"]`, `["ee"]`, or `[]` for both                      |
+| `keywords`               | TEXT (JSON) | `[]`    | Title/description substrings to require (AND with rules)   |
+| `last_alerted_at`        | TIMESTAMP   | NULL    | Last time a DM alert batch was sent                        |
 | `created_at`             | TIMESTAMP   | now     | Row creation time                                          |
 | `updated_at`             | TIMESTAMP   | now     | Last update time                                           |
 
@@ -326,8 +359,10 @@ bot/
 ├── config.py         # pydantic-settings — reads .env, validates config
 ├── models.py         # Job dataclass shared by all scrapers
 ├── filters.py        # Title + location filtering logic
-├── db.py             # SQLite dedup layer (seen_jobs table)
+├── db.py             # SQLite layer — job_postings, user_preferences, user_filter_rules
 ├── notifier.py       # Sends discord.Embed messages to the channel
+├── alerts.py         # DM alert wizard, per-user delivery, quiet hours
+├── commands.py       # Slash commands — /query, /scout, /alert-*, /health
 ├── scheduler.py      # APScheduler wiring + poll functions
 └── scrapers/
     ├── greenhouse.py # GET boards-api.greenhouse.io/v1/boards/{slug}/jobs
@@ -390,7 +425,7 @@ Estimated cost: ~$5/month for a small persistent instance.
 
 ### User experience
 
-- [ ] **Discord DMs to specific users** — Send job notifications directly to configured Discord user IDs via DM, in addition to or instead of the channel. Requires users to share a server with the bot and have DMs from server members enabled.
+- [x] **Discord DMs to specific users** — `/alert` wizard collects role, discipline, location, interval, keyword, company, and quiet-hours preferences and delivers matching jobs via DM on a per-user schedule.
 - [ ] **Per-user company subscriptions** — Let each user maintain their own follow list, with predefined sets (FAANG, top startups) and individual company picks.
 - [ ] **Multi-dimensional filters** — Combinable filter tuples per user, e.g. `(fulltime,SWE,US)+(intern,SWE,colo)`, covering role type (SWE/EE/systems), job type (fulltime/intern), and location preference.
 - [x] **`/query` command** — On-demand search against the jobs DB. Supports keyword, company, role (internship / new grad / all), discipline (SWE / EE), and US state filters. Returns up to 10 embeds per query.

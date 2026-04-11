@@ -12,8 +12,10 @@ bot/
 ├── config.py              # pydantic-settings, reads .env
 ├── models.py              # Job dataclass (shared by all scrapers)
 ├── filters.py             # keyword + location + level logic
-├── db.py                  # aiosqlite — job_postings dedup + user preferences
+├── db.py                  # aiosqlite — job_postings, user_preferences, user_filter_rules
 ├── notifier.py            # sends discord.Embed messages to the configured channel
+├── alerts.py              # /alert wizard (discord.ui Views), per-user DM delivery, quiet hours
+├── commands.py            # slash commands — /query, /scout, /alert-*, /health
 ├── scheduler.py           # APScheduler — poll functions + orchestration
 └── scrapers/
     ├── greenhouse.py      # slug-based, boards-api.greenhouse.io
@@ -70,78 +72,126 @@ Two-stage filter. Target: intern and new-grad/entry-level SWE and EE roles, US o
 Single SQLite file (`jobs.db` by default). Three tables:
 
 ### `job_postings`
-Stores every tech-relevant job returned by scrapers. Replaces the old `seen_jobs` table. Dedup via `UNIQUE (source, job_id)` + `INSERT OR IGNORE`. Location stored as raw string; parsed breakdowns live in `job_locations`.
+Stores every tech-relevant job returned by scrapers. Dedup via `UNIQUE (source, job_id)` + `INSERT OR IGNORE`. Location stored as raw string; parsed breakdowns live in `job_locations`.
 
 ```sql
 CREATE TABLE IF NOT EXISTS job_postings (
-    id           INTEGER   PRIMARY KEY AUTOINCREMENT,
-    source       TEXT      NOT NULL,              -- greenhouse | lever | ashby | simplify
-    job_id       TEXT      NOT NULL,              -- platform-assigned ID
-    title        TEXT      NOT NULL,
-    company      TEXT      NOT NULL,
-    location_raw TEXT      NOT NULL,              -- unparsed string from scraper
-    url          TEXT      NOT NULL,
-    posted_at    TIMESTAMP,                       -- from scraper, nullable
-    ingested_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_intern    INTEGER,                         -- 1/0/NULL (NULL = unclassified)
-    is_new_grad  INTEGER,                         -- 1/0/NULL
-    is_remote    INTEGER   NOT NULL DEFAULT 0,    -- 1 if any location segment is remote
-    discipline   TEXT      NOT NULL DEFAULT 'unknown',  -- "swe" | "ee" | "unknown"
-    description_text TEXT,                              -- HTML-stripped description, max 5000 chars
+    id               INTEGER   PRIMARY KEY AUTOINCREMENT,
+    source           TEXT      NOT NULL,              -- greenhouse | lever | ashby | simplify
+    job_id           TEXT      NOT NULL,
+    title            TEXT      NOT NULL,
+    company          TEXT      NOT NULL,
+    location_raw     TEXT      NOT NULL,
+    url              TEXT      NOT NULL,
+    posted_at        TIMESTAMP,
+    ingested_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_intern        INTEGER,                         -- 1/0/NULL
+    is_new_grad      INTEGER,                         -- 1/0/NULL
+    is_remote        INTEGER   NOT NULL DEFAULT 0,
+    discipline       TEXT      NOT NULL DEFAULT 'unknown',  -- "swe" | "ee" | "unknown"
+    description_text TEXT,                           -- HTML-stripped, max 5000 chars
+    is_active        INTEGER   NOT NULL DEFAULT 1,   -- 0 once liveness check returns 404
+    last_checked_at  TIMESTAMP,
     UNIQUE (source, job_id)
 );
 
 CREATE TABLE IF NOT EXISTS job_locations (
     id          INTEGER   PRIMARY KEY AUTOINCREMENT,
     posting_id  INTEGER   NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
-    country     TEXT,                            -- parsed ISO code, e.g. "US", "GB"
-    state       TEXT,                            -- US state abbrev, e.g. "CA"
-    city        TEXT,                            -- parsed city name
-    is_remote   INTEGER   NOT NULL DEFAULT 0     -- 1 if this segment is remote
+    country     TEXT,       -- "US", "GB", etc.
+    state       TEXT,       -- US state abbrev, e.g. "CA"
+    city        TEXT,
+    is_remote   INTEGER   NOT NULL DEFAULT 0
 );
 ```
 
 ### `user_preferences`
-Per-Discord-user notification and delivery settings. Filter logic lives in `user_filter_rules`.
+Per-Discord-user notification and delivery settings.
 
 ```sql
 CREATE TABLE IF NOT EXISTS user_preferences (
     user_id                TEXT      PRIMARY KEY,
     dm_enabled             INTEGER   NOT NULL DEFAULT 1,
     alert_interval_minutes INTEGER   NOT NULL DEFAULT 60,
-    quiet_hours_start      TEXT,                          -- "HH:MM" | NULL
-    quiet_hours_end        TEXT,                          -- "HH:MM" | NULL
-    companies              TEXT      NOT NULL DEFAULT '[]',  -- JSON slug list; [] = all
+    quiet_hours_start      TEXT,       -- "HH:MM" UTC | NULL
+    quiet_hours_end        TEXT,       -- "HH:MM" UTC | NULL
+    companies              TEXT      NOT NULL DEFAULT '[]',    -- JSON slug list; [] = all
+    disciplines            TEXT      NOT NULL DEFAULT '[]',    -- JSON: ["swe","ee"] or []
+    keywords               TEXT      NOT NULL DEFAULT '[]',    -- JSON substring list
+    last_alerted_at        TIMESTAMP,                          -- last DM batch timestamp
     created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
 ### `user_filter_rules`
-Additive filter tuples. Each row = one independent filter; a user is notified if ANY rule matches (OR logic). Combines role type with location scope.
+Additive filter tuples. OR logic — a user is notified if ANY rule matches.
 
 ```sql
 CREATE TABLE IF NOT EXISTS user_filter_rules (
     id             INTEGER   PRIMARY KEY AUTOINCREMENT,
     user_id        TEXT      NOT NULL REFERENCES user_preferences(user_id) ON DELETE CASCADE,
     role_type      TEXT      NOT NULL,  -- "intern" | "new_grad" | "entry_level"
-    location_scope TEXT      NOT NULL,  -- "us" | "remote" | "country:XX" | "state:XX" | "city:Name"
+    location_scope TEXT      NOT NULL,  -- "us" | "remote" | "worldwide" | "country:XX" | "state:XX"
     created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-Example: `(intern, us)` + `(entry_level, state:CO)` = internships anywhere in US OR entry-level roles in Colorado.
+Example: `(intern, us)` + `(new_grad, state:CO)` = internships anywhere in US OR new-grad roles in Colorado.
+
+## Alert System (alerts.py)
+
+`/alert` triggers a 6-step DM wizard using `discord.ui` Views and Modals:
+1. Role types (intern / new_grad / both)
+2. Discipline (swe / ee / both)
+3. Location: `us` | `remote` | `state:XX,YY` (modal, comma-separated) | `country:CC` (modal) | `worldwide`
+4. Alert interval (1 min testing → once a day)
+5. Optional: keywords + companies (modal, both fields)
+6. Optional: quiet hours UTC start/end (modal, HH:MM)
+
+On confirm, `_save_preferences` writes to `user_preferences` and inserts one `user_filter_rules` row per (role × location) combination.
+
+`send_user_alerts(bot)` is called by `poll_user_alerts` every 2 minutes. For each user where `last_alerted_at + interval <= now`:
+- Skip if in quiet hours window (don't advance `last_alerted_at`)
+- Set `last_alerted_at = now` before querying (so clock advances even with no results)
+- Call `query_jobs_for_user(user_id, ingested_after=last_alerted_at, limit=25)`
+- New users (NULL `last_alerted_at`) receive jobs from the last 24 h only
+- DM up to 10 embeds with ← Prev / Next → pagination buttons
+
+`query_jobs_for_user` builds a parameterised query combining:
+- `is_active = 1` + `ingested_at > cutoff`
+- Discipline `IN` filter (global AND)
+- Keyword `LIKE` filter against title + description_text (global AND, OR across keywords)
+- Company `IN` filter (global AND)
+- Rule clauses ORed: each is `(role_cond AND location_cond)` where location uses EXISTS subqueries on `job_locations`
+
+## Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/query` | Search DB with filters; paginated with ← Prev / Next → |
+| `/scout <company> <platform>` | Live-scrape a company on demand |
+| `/alert` | Open DM wizard to set up personalised alerts |
+| `/alert-status` | View current preferences (ephemeral) |
+| `/alert-off` | Pause DM alerts |
+| `/alert-resume` | Re-enable paused alerts |
+| `/alert-test` | Immediate test DM with current matching jobs (all time) |
+| `/health` | Show scraper failure counts |
 
 ## Scheduling
 - Greenhouse / Lever / Ashby: every `POLL_INTERVAL_MINUTES` (default 10)
 - Simplify: every `SIMPLIFY_POLL_INTERVAL_MINUTES` (default 30)
 - Lever and Ashby first runs are deferred (`next_run_time=None`) to stagger traffic
-- All scrapers run once immediately on startup (in `on_ready`) before scheduler takes over
+- User DM alerts: every 2 minutes (`poll_user_alerts`); actual delivery respects per-user intervals
+- Health check: every 60 minutes
+- Liveness probe: every 6 hours (`next_run_time=None`)
+- All scrapers + user alert check run once immediately on startup (in `on_ready`)
 
 ## Discord
 - Full `discord.py` bot client — connects to gateway, sends embeds to a configured channel
 - One embed per job: title + company, location, apply link, Discord blurple accent
 - Batched up to 10 embeds per message (Discord API limit)
+- `/query` and alert DMs both paginate with ← Prev / Next → buttons (discord.ui.View, 300s timeout)
 - Channel is resolved by `DISCORD_CHANNEL_ID` on bot ready
 
 ## Config (env vars via pydantic-settings)

@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     quiet_hours_start      TEXT,
     quiet_hours_end        TEXT,
     companies              TEXT      NOT NULL DEFAULT '[]',
+    disciplines            TEXT      NOT NULL DEFAULT '[]',  -- JSON: ["swe","ee"] or [] for all
+    keywords               TEXT      NOT NULL DEFAULT '[]',  -- JSON: title/desc keyword substrings
+    last_alerted_at        TIMESTAMP,                        -- last time DM alerts were sent
     created_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -81,6 +84,9 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
         "ALTER TABLE job_postings ADD COLUMN description_text TEXT",
         "ALTER TABLE job_postings ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE job_postings ADD COLUMN last_checked_at TIMESTAMP",
+        "ALTER TABLE user_preferences ADD COLUMN disciplines TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE user_preferences ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE user_preferences ADD COLUMN last_alerted_at TIMESTAMP",
     ]
     for sql in migrations:
         try:
@@ -373,6 +379,8 @@ async def get_user_prefs(user_id: str) -> dict | None:
             return None
         data = dict(row)
         data["companies"] = json.loads(data["companies"])
+        data["disciplines"] = json.loads(data.get("disciplines") or "[]")
+        data["keywords"] = json.loads(data.get("keywords") or "[]")
         return data
 
 
@@ -385,8 +393,9 @@ async def upsert_user_prefs(user_id: str, **kwargs: Any) -> None:
     Example:
         await upsert_user_prefs("123", dm_enabled=0, companies=["stripe", "ramp"])
     """
-    if "companies" in kwargs:
-        kwargs["companies"] = json.dumps(kwargs["companies"])
+    for col in ("companies", "disciplines", "keywords"):
+        if col in kwargs and not isinstance(kwargs[col], str):
+            kwargs[col] = json.dumps(kwargs[col])
 
     async with aiosqlite.connect(_DB_PATH) as db:
         await db.execute(
@@ -450,3 +459,155 @@ async def remove_user_filter_rule(rule_id: int, user_id: str) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def clear_user_filter_rules(user_id: str) -> None:
+    """Delete all filter rules for a user (used before replacing with a fresh set)."""
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM user_filter_rules WHERE user_id = ?",
+            (user_id,),
+        )
+        await db.commit()
+
+
+async def get_users_due_for_alert() -> list[dict]:
+    """Return users with dm_enabled=1 whose next alert window has passed."""
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT * FROM user_preferences
+            WHERE dm_enabled = 1
+              AND (
+                last_alerted_at IS NULL
+                OR datetime(last_alerted_at, '+' || alert_interval_minutes || ' minutes')
+                   <= datetime('now')
+              )
+            """
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            data = dict(row)
+            data["companies"] = json.loads(data["companies"])
+            data["disciplines"] = json.loads(data.get("disciplines") or "[]")
+            data["keywords"] = json.loads(data.get("keywords") or "[]")
+            result.append(data)
+        return result
+
+
+async def update_last_alerted(user_id: str) -> None:
+    """Stamp the current time as the last alert sent time for a user."""
+    async with aiosqlite.connect(_DB_PATH) as db:
+        await db.execute(
+            "UPDATE user_preferences SET last_alerted_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+            (user_id,),
+        )
+        await db.commit()
+
+
+async def query_jobs_for_user(
+    user_id: str,
+    ingested_after: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> list[dict]:
+    """Return jobs matching a user's filter rules, most-recently ingested first.
+
+    Combines all of the user's filter rules with OR logic:
+    a job matches if it satisfies at least one (role_type + location_scope) pair.
+    Discipline preference (stored in user_preferences.disciplines) is applied
+    as a global AND filter across all rules.
+    """
+    rules = await get_user_filter_rules(user_id)
+    prefs = await get_user_prefs(user_id)
+    if not rules or not prefs:
+        return []
+
+    disciplines: list[str] = prefs.get("disciplines") or []
+    keywords: list[str] = prefs.get("keywords") or []
+    companies: list[str] = prefs.get("companies") or []
+
+    conditions: list[str] = ["jp.is_active = 1"]
+    params: list[object] = []
+
+    if ingested_after:
+        conditions.append("jp.ingested_at > ?")
+        params.append(ingested_after)
+
+    if disciplines:
+        placeholders = ",".join("?" * len(disciplines))
+        conditions.append(f"jp.discipline IN ({placeholders})")
+        params.extend(disciplines)
+
+    if keywords:
+        kw_clause = " OR ".join(
+            "(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords
+        )
+        conditions.append(f"({kw_clause})")
+        params.extend(v for kw in keywords for v in (f"%{kw}%", f"%{kw}%"))
+
+    if companies:
+        placeholders = ",".join("?" * len(companies))
+        conditions.append(f"LOWER(jp.company) IN ({placeholders})")
+        params.extend(c.lower() for c in companies)
+
+    # Build per-rule clauses — each rule is (role AND location), rules are OR'd
+    rule_parts: list[str] = []
+    rule_params: list[object] = []
+
+    for rule in rules:
+        role_type = rule["role_type"]
+        loc_scope = rule["location_scope"]
+
+        role_cond = "jp.is_intern = 1" if role_type == "intern" else "jp.is_new_grad = 1"
+
+        if loc_scope == "us":
+            loc_cond = (
+                "EXISTS (SELECT 1 FROM job_locations jl "
+                "WHERE jl.posting_id = jp.id AND jl.country = 'US')"
+            )
+        elif loc_scope == "remote":
+            loc_cond = "jp.is_remote = 1"
+        elif loc_scope.startswith("state:"):
+            state = loc_scope.split(":", 1)[1].upper()
+            loc_cond = (
+                "EXISTS (SELECT 1 FROM job_locations jl "
+                "WHERE jl.posting_id = jp.id AND jl.state = ?)"
+            )
+            rule_params.append(state)
+        elif loc_scope.startswith("country:"):
+            country = loc_scope.split(":", 1)[1].upper()
+            loc_cond = (
+                "EXISTS (SELECT 1 FROM job_locations jl "
+                "WHERE jl.posting_id = jp.id AND jl.country = ?)"
+            )
+            rule_params.append(country)
+        else:
+            loc_cond = "1=1"
+
+        rule_parts.append(f"({role_cond} AND {loc_cond})")
+
+    if rule_parts:
+        conditions.append(f"({' OR '.join(rule_parts)})")
+        params.extend(rule_params)
+
+    where = "WHERE " + " AND ".join(conditions)
+    params.append(limit)
+    params.append(offset)
+
+    async with aiosqlite.connect(_DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            f"""
+            SELECT DISTINCT jp.*
+            FROM job_postings jp
+            {where}
+            ORDER BY jp.ingested_at DESC
+            LIMIT ? OFFSET ?
+            """,  # noqa: S608
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]

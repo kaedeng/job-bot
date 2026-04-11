@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Set by main.py once the bot is ready
 _channel: discord.TextChannel | None = None
+_bot: discord.Client | None = None
 
 # Health tracking: consecutive failure counts per scraper
 _FAILURE_ALERT_THRESHOLD = 3
@@ -38,6 +39,11 @@ _scraper_failures: dict[str, int] = {
 def set_channel(channel: discord.TextChannel) -> None:
     global _channel
     _channel = channel
+
+
+def set_bot(bot: discord.Client) -> None:
+    global _bot
+    _bot = bot
 
 
 def _record_success(scraper: str) -> None:
@@ -171,6 +177,19 @@ async def _check_url_live(client: httpx.AsyncClient, url: str) -> bool:
         return True  # network blip — don't mark dead on transient errors
 
 
+async def poll_user_alerts() -> None:
+    """Send DM job alerts to users whose interval has elapsed."""
+    from bot.alerts import send_user_alerts
+
+    if _bot is None:
+        logger.warning("Bot not set — skipping user alert poll")
+        return
+    try:
+        await send_user_alerts(_bot)
+    except Exception as exc:
+        logger.error("User alert poll failed: %s", exc)
+
+
 async def poll_liveness() -> None:
     """Probe stored active postings and mark any 404s as inactive."""
     postings = await db.get_postings_due_for_liveness_check(
@@ -220,6 +239,8 @@ def start_scheduler() -> AsyncIOScheduler:
         minutes=settings.simplify_poll_interval_minutes,
         id="simplify",
     )
+    # User DM alerts — checked every 2 min; actual delivery respects per-user intervals
+    scheduler.add_job(poll_user_alerts, "interval", minutes=2, id="user_alerts")
     # Periodic health check — re-alerts every hour while scrapers stay broken
     scheduler.add_job(_maybe_alert_health, "interval", minutes=60, id="health")
     # Liveness verification — probe stored active postings every 6 hours
