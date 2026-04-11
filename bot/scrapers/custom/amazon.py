@@ -87,9 +87,7 @@ async def scrape(client: httpx.AsyncClient) -> list[Job]:
 
                 # Log response shape on first call to help catch future API changes
                 if offset == 0 and not seen_ids:
-                    logger.debug(
-                        "Amazon response top-level keys: %s", list(data.keys())
-                    )
+                    logger.debug("Amazon response top-level keys: %s", list(data.keys()))
 
                 # "hits" is the integer count; actual job list is under "jobs"
                 job_list: list[dict] = data.get("jobs", [])
@@ -102,9 +100,7 @@ async def scrape(client: httpx.AsyncClient) -> list[Job]:
 
                 for item in job_list:
                     # API has used both id_icims and id across versions
-                    job_id = str(
-                        item.get("id_icims") or item.get("id") or ""
-                    ).strip()
+                    job_id = str(item.get("id_icims") or item.get("id") or "").strip()
                     if not job_id or job_id in seen_ids:
                         continue
                     seen_ids.add(job_id)
