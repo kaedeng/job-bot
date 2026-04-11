@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Tuple, Type
 
 from pydantic.fields import FieldInfo
-from pydantic_settings import BaseSettings, DotEnvSettingsSource, PydanticBaseSettingsSource
+from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource, PydanticBaseSettingsSource
 
 _COMMA_SEP_FIELDS = frozenset(
     {
@@ -15,12 +15,29 @@ _COMMA_SEP_FIELDS = frozenset(
 )
 
 
+def _parse_comma_sep(field_name: str, field: FieldInfo, value: Any) -> Any:
+    if field_name in _COMMA_SEP_FIELDS and isinstance(value, str):
+        return [s.strip() for s in value.split(",") if s.strip()]
+    return None  # sentinel: caller should use super()
+
+
+class _CommaSepEnv(EnvSettingsSource):
+    def prepare_field_value(
+        self, field_name: str, field: FieldInfo, value: Any, value_is_complex: bool
+    ) -> Any:
+        result = _parse_comma_sep(field_name, field, value)
+        if result is not None:
+            return result
+        return super().prepare_field_value(field_name, field, value, value_is_complex)
+
+
 class _CommaSepDotEnv(DotEnvSettingsSource):
     def prepare_field_value(
         self, field_name: str, field: FieldInfo, value: Any, value_is_complex: bool
     ) -> Any:
-        if field_name in _COMMA_SEP_FIELDS and isinstance(value, str):
-            return [s.strip() for s in value.split(",") if s.strip()]
+        result = _parse_comma_sep(field_name, field, value)
+        if result is not None:
+            return result
         return super().prepare_field_value(field_name, field, value, value_is_complex)
 
 
@@ -56,7 +73,7 @@ class Settings(BaseSettings):
     ) -> Tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
-            env_settings,
+            _CommaSepEnv(settings_cls),
             _CommaSepDotEnv(settings_cls),
             file_secret_settings,
         )
