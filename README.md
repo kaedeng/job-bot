@@ -444,7 +444,7 @@ Estimated cost: ~$5/month for a small persistent instance.
 
 ### Scrapers & sources
 
-- [ ] **Custom scraper API contract** — Document the interface a custom scraper must implement so future contributors can add proprietary career pages consistently. Should cover: required return type (`list[Job]`), expected fields and nullability, how to handle pagination, where to register the scraper in the scheduler, and how to wire up a new config slug/toggle.
+- [x] **Custom scraper API contract** — Document the interface a custom scraper must implement so future contributors can add proprietary career pages consistently. Should cover: required return type (`list[Job]`), expected fields and nullability, how to handle pagination, where to register the scraper in the scheduler, and how to wire up a new config slug/toggle.
 - [ ] **Custom scrapers** — Google, Meta, Amazon, Apple, Microsoft, Uber. These use proprietary career APIs (found via DevTools), not standard ATS platforms. Each needs its own scraper in `bot/scrapers/custom/`.
 - [ ] **Workday scraper** — NVIDIA, Snap, and others use Workday, which requires session tokens. Low priority but high value if cracked.
 - [ ] **Rate limit handling** — Add exponential backoff and retry logic for APIs that return 429s, especially Meta and any Cloudflare-protected sites.
