@@ -59,8 +59,7 @@ Two-stage filter. Target: intern and new-grad/entry-level SWE and EE roles, US o
 - Greenhouse/Lever/Ashby: one generic `scrape(slug, client)` function per platform, company = slug in config list
 - Simplify: `scrape(client)` — no slugs, fetches both intern and new-grad listings
 - All scrapers return `list[Job]` with common fields: `id, title, company, location, url, source, posted_at, description`
-- `description` is temporary — used for classification at ingestion time, never stored to DB
-- Greenhouse and Lever populate `description`; Ashby list endpoint doesn't expose it; Simplify is classified by source name
+- `description` is HTML-stripped and stored as `description_text` (max 5000 chars) in `job_postings` for keyword search; Greenhouse and Lever populate it; Ashby list endpoint doesn't expose it; Simplify is classified by source name
 - Dedup via `job_postings` table `UNIQUE (source, job_id)` — `INSERT OR IGNORE` skips already-seen jobs
 - Only tech-relevant jobs (title matches DISCIPLINE_INCLUDE) are stored in `job_postings`
 - Only unseen CS jobs that pass the full entry-level/US filter reach the notifier
@@ -88,6 +87,7 @@ CREATE TABLE IF NOT EXISTS job_postings (
     is_new_grad  INTEGER,                         -- 1/0/NULL
     is_remote    INTEGER   NOT NULL DEFAULT 0,    -- 1 if any location segment is remote
     discipline   TEXT      NOT NULL DEFAULT 'unknown',  -- "swe" | "ee" | "unknown"
+    description_text TEXT,                              -- HTML-stripped description, max 5000 chars
     UNIQUE (source, job_id)
 );
 

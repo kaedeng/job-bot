@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from bot.scrapers import greenhouse, lever
+from bot.scrapers import ashby, greenhouse, lever, simplify
 
 
 @pytest.fixture
@@ -92,3 +92,126 @@ class TestLever:
         client = mock_transport.build_client()
         jobs = await lever.scrape("broken", client)
         assert jobs == []
+
+
+class TestAshby:
+    async def test_parses_jobs(self, mock_transport):
+        mock_transport.add({
+            "data": {
+                "jobBoardWithTeams": {
+                    "jobPostings": [
+                        {
+                            "id": "abc-123",
+                            "title": "Software Engineer Intern",
+                            "locationName": "San Francisco, CA",
+                            "employmentType": "Internship",
+                        }
+                    ]
+                }
+            }
+        })
+        client = mock_transport.build_client()
+        jobs = await ashby.scrape("acme", client)
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "abc-123"
+        assert jobs[0].title == "Software Engineer Intern"
+        assert jobs[0].company == "acme"
+        assert jobs[0].source == "ashby"
+        assert jobs[0].location == "San Francisco, CA"
+        assert jobs[0].url == "https://jobs.ashbyhq.com/acme/abc-123"
+
+    async def test_empty_board(self, mock_transport):
+        mock_transport.add({"data": {"jobBoardWithTeams": {"jobPostings": []}}})
+        client = mock_transport.build_client()
+        jobs = await ashby.scrape("empty", client)
+        assert jobs == []
+
+    async def test_null_board(self, mock_transport):
+        mock_transport.add({"data": {"jobBoardWithTeams": None}})
+        client = mock_transport.build_client()
+        jobs = await ashby.scrape("null", client)
+        assert jobs == []
+
+    async def test_http_error_returns_empty(self, mock_transport):
+        mock_transport.add({}, status_code=500)
+        client = mock_transport.build_client()
+        jobs = await ashby.scrape("broken", client)
+        assert jobs == []
+
+
+class TestSimplify:
+    async def test_parses_intern_and_newgrad(self, mock_transport):
+        mock_transport.add([
+            {"id": "i1", "title": "SWE Intern", "company_name": "Acme",
+             "locations": ["San Francisco, CA"], "url": "https://acme.com/i1", "active": True},
+        ])
+        mock_transport.add([
+            {"id": "g1", "title": "New Grad SWE", "company_name": "Acme",
+             "locations": ["Seattle, WA"], "url": "https://acme.com/g1", "active": True},
+        ])
+        client = mock_transport.build_client()
+        jobs = await simplify.scrape(client)
+
+        assert len(jobs) == 2
+        sources = {j.source for j in jobs}
+        assert "simplify-intern" in sources
+        assert "simplify-newgrad" in sources
+
+    async def test_skips_inactive(self, mock_transport):
+        mock_transport.add([
+            {"id": "i1", "title": "SWE Intern", "company_name": "Acme",
+             "locations": [], "url": "", "active": False},
+            {"id": "i2", "title": "SWE Intern", "company_name": "Beta",
+             "locations": [], "url": "", "active": True},
+        ])
+        mock_transport.add([])
+        client = mock_transport.build_client()
+        jobs = await simplify.scrape(client)
+        assert len(jobs) == 1
+        assert jobs[0].id == "i2"
+
+    async def test_filters_by_company(self, mock_transport):
+        mock_transport.add([
+            {"id": "i1", "title": "SWE Intern", "company_name": "Stripe",
+             "locations": [], "url": "", "active": True},
+            {"id": "i2", "title": "SWE Intern", "company_name": "Ramp",
+             "locations": [], "url": "", "active": True},
+        ])
+        mock_transport.add([])
+        client = mock_transport.build_client()
+        jobs = await simplify.scrape(client, companies=frozenset(["stripe"]))
+        assert len(jobs) == 1
+        assert jobs[0].company == "Stripe"
+
+    async def test_http_error_continues_to_next_source(self, mock_transport):
+        # intern endpoint fails — bot should still return newgrad results
+        mock_transport.add({}, status_code=500)
+        mock_transport.add([
+            {"id": "g1", "title": "New Grad SWE", "company_name": "Acme",
+             "locations": [], "url": "", "active": True},
+        ])
+        client = mock_transport.build_client()
+        jobs = await simplify.scrape(client)
+        assert len(jobs) == 1
+        assert jobs[0].source == "simplify-newgrad"
+
+    async def test_locations_joined(self, mock_transport):
+        mock_transport.add([
+            {"id": "i1", "title": "SWE Intern", "company_name": "Acme",
+             "locations": ["San Francisco, CA", "Seattle, WA"], "url": "", "active": True},
+        ])
+        mock_transport.add([])
+        client = mock_transport.build_client()
+        jobs = await simplify.scrape(client)
+        assert jobs[0].location == "San Francisco, CA, Seattle, WA"
+
+    async def test_empty_locations(self, mock_transport):
+        mock_transport.add([
+            {"id": "i1", "title": "SWE Intern", "company_name": "Acme",
+             "locations": [], "url": "", "active": True},
+        ])
+        mock_transport.add([])
+        client = mock_transport.build_client()
+        jobs = await simplify.scrape(client)
+        assert jobs[0].location == ""

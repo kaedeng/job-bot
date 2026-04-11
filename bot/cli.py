@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import logging
 
 import httpx
 
 from bot.db import init_db, store_jobs_batch
-from bot.filters import classify_discipline, classify_job, is_tech_job, parse_locations, passes_filter
+from bot.filters import (
+    classify_discipline,
+    classify_job,
+    is_tech_job,
+    parse_locations,
+    passes_filter,
+)
 from bot.models import Job
 from bot.scrapers import ashby, greenhouse, lever, simplify
 

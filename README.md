@@ -155,6 +155,21 @@ Each new job appears as an embed with:
 
 When many jobs are found in a single cycle, they're batched into messages of up to 10 embeds each.
 
+### Liveness & Health Monitoring
+
+Each scraper tracks consecutive failures in memory. If a scraper fails **3 or more times in a row**, the bot posts a red embed to the configured Discord channel:
+
+> **Scraper health alert**
+> `greenhouse` scraper has failed **3** consecutive times. Check logs for details.
+
+A periodic job re-checks all failure counts every 60 minutes and re-alerts while a scraper stays broken. Failures reset to zero on the next successful poll.
+
+#### Posting liveness verification
+
+Every 6 hours the bot re-probes stored active postings to confirm the listing URLs are still live. A `HEAD` request is sent to each job URL (falling back to `GET` on 405); a definitive `404` marks the posting `is_active = 0` in `job_postings`. Network errors and non-404 responses (including 429/5xx) are treated as still-live to avoid false positives.
+
+Only postings ingested at least 1 hour ago and not checked in the last 24 hours are probed per cycle (up to 100 per run). The `/query` command and the notifier both exclude inactive postings automatically.
+
 ## Database Schema
 
 The bot uses a single SQLite file (`jobs.db` by default, configurable via `DB_PATH`).
@@ -379,18 +394,22 @@ Estimated cost: ~$5/month for a small persistent instance.
 - [ ] **Per-user company subscriptions** — Let each user maintain their own follow list, with predefined sets (FAANG, top startups) and individual company picks.
 - [ ] **Multi-dimensional filters** — Combinable filter tuples per user, e.g. `(fulltime,SWE,US)+(intern,SWE,colo)`, covering role type (SWE/EE/systems), job type (fulltime/intern), and location preference.
 - [x] **`/query` command** — On-demand search against the jobs DB. Supports keyword, company, role (internship / new grad / all), discipline (SWE / EE), and US state filters. Returns up to 10 embeds per query.
+- [x] **Multiple `/query` subfilters** — Allow users to do comma separation to their queries (e.g. a query on CO,WA will return Colorado and Washington)
+- [x] **Start season filter** — Add a `season` filter to `/query` (fall, spring, summer, winter) that maps to expected start date ranges, so users can narrow results to roles beginning in a specific season.
 - [ ] **Quiet hours** — Per-user notification time windows so the bot only DMs or pings during hours the user configures.
 
 ### Job data quality
 
 - [ ] **Job expiry** — Edit or mark posted embeds when a listing goes dead (HTTP 404 or removed from the board).
 - [x] **Central jobs database** — Full job records in `job_postings` (title, company, location, URL, source, posted date, discipline, is_intern, is_new_grad, is_remote) with a `job_locations` child table for multi-location postings. Replaces the old `seen_jobs` dedup table.
-- [ ] **Liveness verification** — Periodically re-check stored postings to confirm they're still active before surfacing them to new users.
-- [ ] **Company + platform search** — CLI or slash command that takes a company name and a platform (e.g. `greenhouse`, `lever`) and scrapes that specific combination on demand, bypassing the scheduler. Useful for spot-checking a company before adding it to `.env`.
-- [ ] **Description keyword extraction** — At ingestion time, strip common stop-words from the description using a large base vocabulary, then store the remaining domain-specific terms (e.g. `rust`, `kubernetes`, `verilog`, `react`) in a `job_keywords` table linked to `job_postings`. Enables keyword-based search and filtering without storing full description text.
+- [x] **Liveness verification** — Periodically re-check stored postings to confirm they're still active before surfacing them to new users.
+- [x] **Company + platform search** — CLI or slash command that takes a company name and a platform (e.g. `greenhouse`, `lever`) and scrapes that specific combination on demand, bypassing the scheduler. Useful for spot-checking a company before adding it to `.env`.
+- [x] **Description keyword extraction** — At ingestion time, strip common stop-words from the description using a large base vocabulary, then store the remaining domain-specific terms (e.g. `rust`, `kubernetes`, `verilog`, `react`) in a `job_keywords` table linked to `job_postings`. Enables keyword-based search and filtering without storing full description text.
+- [x] **Keyword search across title and description** — The `/query` keyword filter currently matches only job titles. Extend it to also match against extracted description keywords (requires the description keyword extraction above). Scrapers that expose descriptions (Greenhouse, Lever) should populate keywords at ingestion; others fall back to title-only matching.
 
 ### Scrapers & sources
 
+- [ ] **Custom scraper API contract** — Document the interface a custom scraper must implement so future contributors can add proprietary career pages consistently. Should cover: required return type (`list[Job]`), expected fields and nullability, how to handle pagination, where to register the scraper in the scheduler, and how to wire up a new config slug/toggle.
 - [ ] **Custom scrapers** — Google, Meta, Amazon, Apple, Microsoft, Uber. These use proprietary career APIs (found via DevTools), not standard ATS platforms. Each needs its own scraper in `bot/scrapers/custom/`.
 - [ ] **Workday scraper** — NVIDIA, Snap, and others use Workday, which requires session tokens. Low priority but high value if cracked.
 - [ ] **Rate limit handling** — Add exponential backoff and retry logic for APIs that return 429s, especially Meta and any Cloudflare-protected sites.
@@ -398,5 +417,5 @@ Estimated cost: ~$5/month for a small persistent instance.
 ### Infrastructure
 
 - [ ] **Richer embeds** — Add posted date, team/department, salary range (when available), and a footer with the source platform.
-- [ ] **Health monitoring** — Add a `/health` endpoint or periodic heartbeat message so you know the bot is alive. Alert if a scraper has failed N times in a row.
-- [ ] **CI** — GitHub Actions workflow to run `ruff check` + `pytest` on PRs.
+- [x] **Health monitoring** — Add a `/health` endpoint or periodic heartbeat message so you know the bot is alive. Alert if a scraper has failed N times in a row.
+- [x] **CI** — GitHub Actions workflow to run `ruff check` + `pytest` on PRs.
