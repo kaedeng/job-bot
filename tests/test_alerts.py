@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import timezone
 from unittest.mock import patch
 
-import pytest
-
 from bot.alerts import (
     _AlertSetup,
     _build_summary,
@@ -12,7 +10,6 @@ from bot.alerts import (
     _is_quiet_time,
     _loc_display,
 )
-
 
 # ─── _is_quiet_time ───────────────────────────────────────────────────────────
 

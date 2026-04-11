@@ -426,12 +426,12 @@ Estimated cost: ~$5/month for a small persistent instance.
 ### User experience
 
 - [x] **Discord DMs to specific users** — `/alert` wizard collects role, discipline, location, interval, keyword, company, and quiet-hours preferences and delivers matching jobs via DM on a per-user schedule.
-- [ ] **Per-user company subscriptions** — Let each user maintain their own follow list, with predefined sets (FAANG, top startups) and individual company picks.
+- [x] **Per-user company subscriptions** — Let each user maintain their own follow list, with predefined sets (FAANG, top startups) and individual company picks.
 - [ ] **Multi-dimensional filters** — Combinable filter tuples per user, e.g. `(fulltime,SWE,US)+(intern,SWE,colo)`, covering role type (SWE/EE/systems), job type (fulltime/intern), and location preference.
 - [x] **`/query` command** — On-demand search against the jobs DB. Supports keyword, company, role (internship / new grad / all), discipline (SWE / EE), and US state filters. Returns up to 10 embeds per query.
 - [x] **Multiple `/query` subfilters** — Allow users to do comma separation to their queries (e.g. a query on CO,WA will return Colorado and Washington)
 - [x] **Start season filter** — Add a `season` filter to `/query` (fall, spring, summer, winter) that maps to expected start date ranges, so users can narrow results to roles beginning in a specific season.
-- [ ] **Quiet hours** — Per-user notification time windows so the bot only DMs or pings during hours the user configures.
+- [x] **Quiet hours** — Per-user notification time windows so the bot only DMs or pings during hours the user configures.
 
 ### Job data quality
 

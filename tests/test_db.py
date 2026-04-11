@@ -161,20 +161,24 @@ class TestStoreJobsBatch:
 
 class TestQueryJobs:
     async def test_keyword_filter_title(self, fresh_db):
-        await _store([
-            _job(id="1", title="Python Backend Intern", location="New York, NY"),
-            _job(id="2", title="Frontend Engineer Intern", location="Seattle, WA"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Python Backend Intern", location="New York, NY"),
+                _job(id="2", title="Frontend Engineer Intern", location="Seattle, WA"),
+            ]
+        )
         rows = await db.query_jobs(keyword="Python")
         assert len(rows) == 1
         assert rows[0]["title"] == "Python Backend Intern"
 
     async def test_keyword_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", title="Python Backend Intern", location="New York, NY"),
-            _job(id="2", title="React Frontend Intern", location="Seattle, WA"),
-            _job(id="3", title="DevOps Engineer Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Python Backend Intern", location="New York, NY"),
+                _job(id="2", title="React Frontend Intern", location="Seattle, WA"),
+                _job(id="3", title="DevOps Engineer Intern", location="Austin, TX"),
+            ]
+        )
         rows = await db.query_jobs(keyword="Python,React")
         titles = {r["title"] for r in rows}
         assert "Python Backend Intern" in titles
@@ -187,47 +191,57 @@ class TestQueryJobs:
         assert len(rows) == 1
 
     async def test_company_filter(self, fresh_db):
-        await _store([
-            _job(id="1", company="stripe"),
-            _job(id="2", company="ramp"),
-        ])
+        await _store(
+            [
+                _job(id="1", company="stripe"),
+                _job(id="2", company="ramp"),
+            ]
+        )
         rows = await db.query_jobs(company="stripe", role="all")
         assert len(rows) == 1
         assert rows[0]["company"] == "stripe"
 
     async def test_company_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", company="stripe"),
-            _job(id="2", company="ramp"),
-            _job(id="3", company="anthropic"),
-        ])
+        await _store(
+            [
+                _job(id="1", company="stripe"),
+                _job(id="2", company="ramp"),
+                _job(id="3", company="anthropic"),
+            ]
+        )
         rows = await db.query_jobs(company="stripe,ramp", role="all")
         companies = {r["company"] for r in rows}
         assert companies == {"stripe", "ramp"}
 
     async def test_role_intern(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern"),
-            _job(id="2", title="New Grad Software Engineer"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern"),
+                _job(id="2", title="New Grad Software Engineer"),
+            ]
+        )
         rows = await db.query_jobs(role="intern")
         assert len(rows) == 1
         assert rows[0]["is_intern"] == 1
 
     async def test_role_new_grad(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern"),
-            _job(id="2", title="New Grad Software Engineer"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern"),
+                _job(id="2", title="New Grad Software Engineer"),
+            ]
+        )
         rows = await db.query_jobs(role="new_grad")
         assert len(rows) == 1
         assert rows[0]["is_new_grad"] == 1
 
     async def test_role_all(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern"),
-            _job(id="2", title="New Grad Software Engineer"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern"),
+                _job(id="2", title="New Grad Software Engineer"),
+            ]
+        )
         rows = await db.query_jobs(role="all")
         assert len(rows) == 2
 
@@ -239,60 +253,82 @@ class TestQueryJobs:
                    (source, job_id, title, company, location_raw, url,
                     is_intern, is_new_grad, is_remote, discipline)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                ("test", "999", "Software Engineer", "acme",
-                 "Seattle, WA", "https://x", 0, 0, 0, "swe"),
+                (
+                    "test",
+                    "999",
+                    "Software Engineer",
+                    "acme",
+                    "Seattle, WA",
+                    "https://x",
+                    0,
+                    0,
+                    0,
+                    "swe",
+                ),
             )
             await conn.commit()
         rows = await db.query_jobs()
         assert all(r["title"] != "Software Engineer" for r in rows)
 
     async def test_role_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern"),
-            _job(id="2", title="New Grad Software Engineer"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern"),
+                _job(id="2", title="New Grad Software Engineer"),
+            ]
+        )
         rows = await db.query_jobs(role="intern,new_grad")
         assert len(rows) == 2
 
     async def test_discipline_filter(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern"),
-            _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern"),
+                _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
+            ]
+        )
         rows = await db.query_jobs(discipline="swe", role="all")
         assert all(r["discipline"] == "swe" for r in rows)
 
     async def test_discipline_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern"),
-            _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern"),
+                _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
+            ]
+        )
         rows = await db.query_jobs(discipline="swe,ee", role="all")
         assert len(rows) == 2
 
     async def test_state_filter(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="San Francisco, CA"),
-            _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="San Francisco, CA"),
+                _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
+            ]
+        )
         rows = await db.query_jobs(state="CA")
         assert len(rows) == 1
         assert rows[0]["location_raw"] == "San Francisco, CA"
 
     async def test_state_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="San Francisco, CA"),
-            _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
-            _job(id="3", title="Backend Engineer Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="San Francisco, CA"),
+                _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
+                _job(id="3", title="Backend Engineer Intern", location="Austin, TX"),
+            ]
+        )
         rows = await db.query_jobs(state="CA,WA")
         assert len(rows) == 2
 
     async def test_season_filter(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Summer Intern"),
-            _job(id="2", title="Software Engineer Fall Intern"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Summer Intern"),
+                _job(id="2", title="Software Engineer Fall Intern"),
+            ]
+        )
         rows = await db.query_jobs(season="summer")
         assert len(rows) == 1
         assert "Summer" in rows[0]["title"]
@@ -377,6 +413,7 @@ class TestUserPreferences:
             )
             row = await cursor.fetchone()
         import json
+
         assert json.loads(row[0]) == ["a", "b"]
 
 
@@ -467,9 +504,17 @@ async def _insert_posting(
                     ?, {ingested_at}, {checked_expr})
             """,  # noqa: S608
             (
-                source, job_id, "Software Engineer Intern", "acme",
-                "San Francisco, CA", f"https://example.com/jobs/{job_id}",
-                1, 0, 0, "swe", is_active,
+                source,
+                job_id,
+                "Software Engineer Intern",
+                "acme",
+                "San Francisco, CA",
+                f"https://example.com/jobs/{job_id}",
+                1,
+                0,
+                0,
+                "swe",
+                is_active,
             ),
         )
         await conn.commit()
@@ -753,41 +798,49 @@ class TestQueryJobsForUser:
         assert await db.query_jobs_for_user("u1") == []
 
     async def test_multiple_rules_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Austin, TX"),
-            _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="Austin, TX"),
+                _job(id="2", title="New Grad Software Engineer", location="Seattle, WA"),
+            ]
+        )
         await db.add_user_filter_rule("u1", "intern", "us")
         await db.add_user_filter_rule("u1", "new_grad", "us")
         rows = await db.query_jobs_for_user("u1")
         assert len(rows) == 2
 
     async def test_remote_scope_matches_remote_job(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Remote"),
-            _job(id="2", title="Software Engineer Intern", location="San Francisco, CA"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="Remote"),
+                _job(id="2", title="Software Engineer Intern", location="San Francisco, CA"),
+            ]
+        )
         await db.add_user_filter_rule("u1", "intern", "remote")
         rows = await db.query_jobs_for_user("u1")
         assert len(rows) == 1
         assert rows[0]["is_remote"] == 1
 
     async def test_state_scope_matches_correct_state(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Denver, CO"),
-            _job(id="2", title="Software Engineer Intern", location="Seattle, WA"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="Denver, CO"),
+                _job(id="2", title="Software Engineer Intern", location="Seattle, WA"),
+            ]
+        )
         await db.add_user_filter_rule("u1", "intern", "state:CO")
         rows = await db.query_jobs_for_user("u1")
         assert len(rows) == 1
         assert rows[0]["location_raw"] == "Denver, CO"
 
     async def test_multiple_state_rules_or_logic(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Denver, CO"),
-            _job(id="2", title="Software Engineer Intern", location="Seattle, WA"),
-            _job(id="3", title="Software Engineer Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="Denver, CO"),
+                _job(id="2", title="Software Engineer Intern", location="Seattle, WA"),
+                _job(id="3", title="Software Engineer Intern", location="Austin, TX"),
+            ]
+        )
         await db.add_user_filter_rule("u1", "intern", "state:CO")
         await db.add_user_filter_rule("u1", "intern", "state:WA")
         rows = await db.query_jobs_for_user("u1")
@@ -797,19 +850,23 @@ class TestQueryJobsForUser:
         assert "Seattle, WA" in locs
 
     async def test_worldwide_scope_returns_all_matching(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Remote"),
-            _job(id="2", title="Software Engineer Intern", location="San Francisco, CA"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="Remote"),
+                _job(id="2", title="Software Engineer Intern", location="San Francisco, CA"),
+            ]
+        )
         await db.add_user_filter_rule("u1", "intern", "worldwide")
         rows = await db.query_jobs_for_user("u1")
         assert len(rows) == 2
 
     async def test_discipline_filter_applied_globally(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Austin, TX"),
-            _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Software Engineer Intern", location="Austin, TX"),
+                _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
+            ]
+        )
         await db.upsert_user_prefs("u1", disciplines=["swe"])
         await db.add_user_filter_rule("u1", "intern", "us")
         rows = await db.query_jobs_for_user("u1")
@@ -817,10 +874,12 @@ class TestQueryJobsForUser:
         assert rows[0]["discipline"] == "swe"
 
     async def test_keyword_filter_matches_title(self, fresh_db):
-        await _store([
-            _job(id="1", title="Python Backend Intern", location="Austin, TX"),
-            _job(id="2", title="React Frontend Intern", location="Austin, TX"),
-        ])
+        await _store(
+            [
+                _job(id="1", title="Python Backend Intern", location="Austin, TX"),
+                _job(id="2", title="React Frontend Intern", location="Austin, TX"),
+            ]
+        )
         await db.upsert_user_prefs("u1", keywords=["python"])
         await db.add_user_filter_rule("u1", "intern", "us")
         rows = await db.query_jobs_for_user("u1")
@@ -828,22 +887,35 @@ class TestQueryJobsForUser:
         assert "Python" in rows[0]["title"]
 
     async def test_keyword_filter_matches_description(self, fresh_db):
-        await _store([
-            _job(id="1", title="Software Engineer Intern", location="Austin, TX",
-                 description="experience with kubernetes preferred"),
-            _job(id="2", title="Software Engineer Intern", location="Austin, TX",
-                 source="lever", description="no special requirements"),
-        ])
+        await _store(
+            [
+                _job(
+                    id="1",
+                    title="Software Engineer Intern",
+                    location="Austin, TX",
+                    description="experience with kubernetes preferred",
+                ),
+                _job(
+                    id="2",
+                    title="Software Engineer Intern",
+                    location="Austin, TX",
+                    source="lever",
+                    description="no special requirements",
+                ),
+            ]
+        )
         await db.upsert_user_prefs("u1", keywords=["kubernetes"])
         await db.add_user_filter_rule("u1", "intern", "us")
         rows = await db.query_jobs_for_user("u1")
         assert len(rows) == 1
 
     async def test_company_filter(self, fresh_db):
-        await _store([
-            _job(id="1", company="stripe", location="San Francisco, CA"),
-            _job(id="2", company="ramp", location="New York, NY"),
-        ])
+        await _store(
+            [
+                _job(id="1", company="stripe", location="San Francisco, CA"),
+                _job(id="2", company="ramp", location="New York, NY"),
+            ]
+        )
         await db.upsert_user_prefs("u1", companies=["stripe"])
         await db.add_user_filter_rule("u1", "intern", "us")
         rows = await db.query_jobs_for_user("u1")
@@ -866,8 +938,12 @@ class TestQueryJobsForUser:
 
     async def test_offset_pagination(self, fresh_db):
         jobs = [
-            _job(id=str(i), title="Software Engineer Intern", location="Austin, TX",
-                 source="greenhouse" if i % 2 == 0 else "lever")
+            _job(
+                id=str(i),
+                title="Software Engineer Intern",
+                location="Austin, TX",
+                source="greenhouse" if i % 2 == 0 else "lever",
+            )
             for i in range(5)
         ]
         await _store(jobs)
@@ -881,9 +957,7 @@ class TestQueryJobsForUser:
         assert len(page2) == 2
 
     async def test_excludes_inactive_jobs(self, fresh_db):
-        posting_id = await _insert_posting(
-            fresh_db, job_id="dead", ingested_ago_hours=1, is_active=0
-        )
+        await _insert_posting(fresh_db, job_id="dead", ingested_ago_hours=1, is_active=0)
         await db.add_user_filter_rule("u1", "intern", "us")
         rows = await db.query_jobs_for_user("u1")
         assert all(r["job_id"] != "dead" for r in rows)

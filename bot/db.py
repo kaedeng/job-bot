@@ -142,11 +142,7 @@ async def store_jobs_batch(
             is_remote = any(loc["is_remote"] for loc in locations)
             is_intern, is_new_grad = classify_fn(j)
             discipline = classify_discipline_fn(j)
-            posted = (
-                j.posted_at.isoformat()
-                if isinstance(j.posted_at, datetime)
-                else j.posted_at
-            )
+            posted = j.posted_at.isoformat() if isinstance(j.posted_at, datetime) else j.posted_at
 
             desc_text = _strip_description(j.description) if j.description else None
 
@@ -159,8 +155,17 @@ async def store_jobs_batch(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    j.source, j.id, j.title, j.company, j.location,
-                    j.url, posted, int(is_intern), int(is_new_grad), int(is_remote), discipline,
+                    j.source,
+                    j.id,
+                    j.title,
+                    j.company,
+                    j.location,
+                    j.url,
+                    posted,
+                    int(is_intern),
+                    int(is_new_grad),
+                    int(is_remote),
+                    discipline,
                     desc_text,
                 ),
             )
@@ -231,9 +236,7 @@ async def query_jobs(
     states = _to_list(state)
 
     if keywords:
-        kw_clause = " OR ".join(
-            "(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords
-        )
+        kw_clause = " OR ".join("(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords)
         jp_conditions.append(f"({kw_clause})")
         params.extend(val for kw in keywords for val in (f"%{kw}%", f"%{kw}%"))
 
@@ -542,9 +545,7 @@ async def query_jobs_for_user(
         params.extend(disciplines)
 
     if keywords:
-        kw_clause = " OR ".join(
-            "(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords
-        )
+        kw_clause = " OR ".join("(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords)
         conditions.append(f"({kw_clause})")
         params.extend(v for kw in keywords for v in (f"%{kw}%", f"%{kw}%"))
 

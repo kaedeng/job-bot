@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     meta_enabled: bool = False
     meta_poll_interval_minutes: int = 30
 
+    amazon_enabled: bool = False
+    amazon_poll_interval_minutes: int = 30
+
     @classmethod
     def settings_customise_sources(
         cls,

@@ -19,6 +19,7 @@ from bot.filters import (
 from bot.models import Job
 from bot.notifier import notify
 from bot.scrapers import ashby, greenhouse, lever, simplify
+from bot.scrapers.custom import amazon
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ _scraper_failures: dict[str, int] = {
     "lever": 0,
     "ashby": 0,
     "simplify": 0,
+    "amazon": 0,
 }
 
 
@@ -145,20 +147,36 @@ async def poll_ashby() -> None:
 
 async def poll_simplify() -> None:
     try:
-        companies = frozenset(
-            s.lower()
-            for s in (
-                *settings.greenhouse_slugs,
-                *settings.lever_slugs,
-                *settings.ashby_slugs,
+        companies = (
+            frozenset(
+                s.lower()
+                for s in (
+                    *settings.greenhouse_slugs,
+                    *settings.lever_slugs,
+                    *settings.ashby_slugs,
+                )
             )
-        ) or None  # None = no filter if config is empty
+            or None
+        )  # None = no filter if config is empty
         async with httpx.AsyncClient(timeout=30) as client:
             jobs = await simplify.scrape(client, companies=companies)
             await _process_jobs(jobs)
         _record_success("simplify")
     except Exception as exc:
         _record_failure("simplify", exc)
+        await _maybe_alert_health()
+
+
+async def poll_amazon() -> None:
+    if not settings.amazon_enabled:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            jobs = await amazon.scrape(client)
+            await _process_jobs(jobs)
+        _record_success("amazon")
+    except Exception as exc:
+        _record_failure("amazon", exc)
         await _maybe_alert_health()
 
 
@@ -212,12 +230,16 @@ async def poll_liveness() -> None:
                 expired += 1
                 logger.info(
                     "Marked inactive: [%s] %s (id=%d)",
-                    posting["source"], posting["job_id"], posting["id"],
+                    posting["source"],
+                    posting["job_id"],
+                    posting["id"],
                 )
             await asyncio.sleep(0.5)  # be polite
 
     if expired:
-        logger.info("Liveness check complete: %d expired, %d still active", expired, len(postings) - expired)
+        logger.info(
+            "Liveness check complete: %d expired, %d still active", expired, len(postings) - expired
+        )
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -227,18 +249,34 @@ def start_scheduler() -> AsyncIOScheduler:
     # Stagger scrapers to avoid burst traffic
     scheduler.add_job(poll_greenhouse, "interval", minutes=interval, id="greenhouse")
     scheduler.add_job(
-        poll_lever, "interval", minutes=interval, id="lever",
+        poll_lever,
+        "interval",
+        minutes=interval,
+        id="lever",
         next_run_time=None,  # delay first run
     )
     scheduler.add_job(
-        poll_ashby, "interval", minutes=interval, id="ashby",
+        poll_ashby,
+        "interval",
+        minutes=interval,
+        id="ashby",
         next_run_time=None,
     )
     scheduler.add_job(
-        poll_simplify, "interval",
+        poll_simplify,
+        "interval",
         minutes=settings.simplify_poll_interval_minutes,
         id="simplify",
     )
+    if settings.amazon_enabled:
+        scheduler.add_job(
+            poll_amazon,
+            "interval",
+            minutes=settings.amazon_poll_interval_minutes,
+            id="amazon",
+            next_run_time=None,
+        )
+
     # User DM alerts — checked every 2 min; actual delivery respects per-user intervals
     scheduler.add_job(poll_user_alerts, "interval", minutes=2, id="user_alerts")
     # Periodic health check — re-alerts every hour while scrapers stay broken

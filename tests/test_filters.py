@@ -16,7 +16,12 @@ def _job(
     description: str | None = None,
 ) -> Job:
     return Job(
-        id="1", title=title, company="test", location=location, url="", source=source,
+        id="1",
+        title=title,
+        company="test",
+        location=location,
+        url="",
+        source=source,
         description=description,
     )
 

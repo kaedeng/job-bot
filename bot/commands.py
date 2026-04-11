@@ -315,9 +315,7 @@ def register(tree: app_commands.CommandTree) -> None:
 
         disciplines = prefs.get("disciplines") or []
         disc_str = (
-            "SWE + EE (all)"
-            if not disciplines
-            else " + ".join(d.upper() for d in disciplines)
+            "SWE + EE (all)" if not disciplines else " + ".join(d.upper() for d in disciplines)
         )
 
         rule_lines = []
@@ -345,9 +343,7 @@ def register(tree: app_commands.CommandTree) -> None:
         if companies:
             embed.add_field(name="Companies", value=", ".join(companies), inline=False)
         if qh_start and qh_end:
-            embed.add_field(
-                name="Quiet hours (UTC)", value=f"{qh_start} – {qh_end}", inline=True
-            )
+            embed.add_field(name="Quiet hours (UTC)", value=f"{qh_start} – {qh_end}", inline=True)
         if prefs.get("last_alerted_at"):
             embed.set_footer(text=f"Last alert sent: {prefs['last_alerted_at'][:16]} UTC")
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -439,9 +435,7 @@ def register(tree: app_commands.CommandTree) -> None:
                 f"**[Test alert] {count} job{'s' if count != 1 else ''}** "
                 "matching your preferences:"
             )
-            view = alerts._AlertPageView(
-                user_id, ingested_after=None, offset=0, has_more=has_more
-            )
+            view = alerts._AlertPageView(user_id, ingested_after=None, offset=0, has_more=has_more)
             await interaction.user.send(content=header, embeds=embeds, view=view)
             await interaction.followup.send(
                 f"Test DM sent! Found **{count} job(s)** matching your preferences.",

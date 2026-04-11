@@ -18,6 +18,7 @@ from bot.filters import (
 )
 from bot.models import Job
 from bot.scrapers import ashby, greenhouse, lever, simplify
+from bot.scrapers.custom import amazon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +37,8 @@ async def run_scraper(source: str, slug: str | None) -> list[Job]:
             return await ashby.scrape(slug, client)
         elif source == "simplify":
             return await simplify.scrape(client)
+        elif source == "amazon":
+            return await amazon.scrape(client)
         else:
             logger.error("Unknown source %s (slug=%s)", source, slug)
             return []
@@ -69,6 +72,7 @@ async def dry_run(source: str, slug: str | None, show_all: bool, store: bool) ->
         await init_db()
         await store_jobs_batch(cs_jobs, parse_locations, classify_job, classify_discipline)
         from bot.config import settings
+
         logger.info("Stored %d CS jobs to %s", len(cs_jobs), settings.db_path)
 
 
@@ -76,7 +80,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Dry-run job scrapers locally")
     parser.add_argument(
         "source",
-        choices=["greenhouse", "lever", "ashby", "simplify"],
+        choices=["greenhouse", "lever", "ashby", "simplify", "amazon"],
         help="Scraper source to test",
     )
     parser.add_argument(
@@ -98,7 +102,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.source != "simplify" and not args.slug:
+    if args.source not in {"simplify", "amazon"} and not args.slug:
         parser.error(f"{args.source} requires a company slug")
 
     asyncio.run(dry_run(args.source, args.slug, args.show_all, args.store))

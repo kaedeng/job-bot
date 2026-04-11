@@ -25,26 +25,23 @@ _INTERVAL_OPTIONS = [
 ]
 
 _TOTAL_STEPS = 6  # shown in step headers
-_STEP4_CONTENT = (
-    "**Step 4 of 6 — Alert Interval**\n"
-    "How often should I check for new matching jobs?"
-)
+_STEP4_CONTENT = "**Step 4 of 6 — Alert Interval**\nHow often should I check for new matching jobs?"
 
 
 @dataclass
 class _AlertSetup:
     """Accumulates user choices through the wizard steps."""
 
-    role_types: list[str] = field(default_factory=list)    # "intern", "new_grad"
-    disciplines: list[str] = field(default_factory=list)   # "swe","ee"; empty = both
+    role_types: list[str] = field(default_factory=list)  # "intern", "new_grad"
+    disciplines: list[str] = field(default_factory=list)  # "swe","ee"; empty = both
     location_scope: str = "us"  # "us","remote","state","country:<CC>","worldwide"
-    states: list[str] = field(default_factory=list)        # e.g. ["CO","WA"]
-    country_code: str = ""                                 # e.g. "GB" for non-US
+    states: list[str] = field(default_factory=list)  # e.g. ["CO","WA"]
+    country_code: str = ""  # e.g. "GB" for non-US
     interval_minutes: int = 60
-    keywords: list[str] = field(default_factory=list)      # optional title/desc substrings
-    companies: list[str] = field(default_factory=list)     # optional company slugs
-    quiet_hours_start: str | None = None                   # "HH:MM" UTC
-    quiet_hours_end: str | None = None                     # "HH:MM" UTC
+    keywords: list[str] = field(default_factory=list)  # optional title/desc substrings
+    companies: list[str] = field(default_factory=list)  # optional company slugs
+    quiet_hours_start: str | None = None  # "HH:MM" UTC
+    quiet_hours_end: str | None = None  # "HH:MM" UTC
 
 
 # ─── Step 1: Role types ────────────────────────────────────────────────────────
@@ -61,9 +58,7 @@ class _Step1View(discord.ui.View):
         max_values=2,
         options=[
             discord.SelectOption(label="Internships", value="intern", emoji="🎓"),
-            discord.SelectOption(
-                label="New Grad / Entry Level", value="new_grad", emoji="🆕"
-            ),
+            discord.SelectOption(label="New Grad / Entry Level", value="new_grad", emoji="🆕"),
         ],
     )
     async def role_select(
@@ -89,12 +84,8 @@ class _Step2View(discord.ui.View):
         min_values=1,
         max_values=2,
         options=[
-            discord.SelectOption(
-                label="Software Engineering (SWE)", value="swe", emoji="💻"
-            ),
-            discord.SelectOption(
-                label="Electrical Engineering (EE)", value="ee", emoji="⚡"
-            ),
+            discord.SelectOption(label="Software Engineering (SWE)", value="swe", emoji="💻"),
+            discord.SelectOption(label="Electrical Engineering (EE)", value="ee", emoji="⚡"),
         ],
     )
     async def discipline_select(
@@ -243,9 +234,7 @@ class _Step5View(discord.ui.View):
         await interaction.response.send_modal(_FiltersModal(self._setup))
 
     @discord.ui.button(label="Skip →", style=discord.ButtonStyle.secondary)
-    async def skip(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
             content=_header(
                 6,
@@ -276,14 +265,10 @@ class _FiltersModal(discord.ui.Modal, title="Optional filters"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         self._setup.keywords = [
-            k.strip().lower()
-            for k in self.keywords_input.value.split(",")
-            if k.strip()
+            k.strip().lower() for k in self.keywords_input.value.split(",") if k.strip()
         ]
         self._setup.companies = [
-            c.strip().lower()
-            for c in self.companies_input.value.split(",")
-            if c.strip()
+            c.strip().lower() for c in self.companies_input.value.split(",") if c.strip()
         ]
         await interaction.response.edit_message(
             content=_header(
@@ -304,15 +289,11 @@ class _Step6View(discord.ui.View):
         self._setup = setup
 
     @discord.ui.button(label="Set quiet hours (UTC)", style=discord.ButtonStyle.primary)
-    async def set_quiet(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def set_quiet(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(_QuietHoursModal(self._setup))
 
     @discord.ui.button(label="Skip →", style=discord.ButtonStyle.secondary)
-    async def skip(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
             content=_build_summary(self._setup),
             view=_ConfirmView(self._setup),
@@ -371,9 +352,7 @@ class _ConfirmView(discord.ui.View):
         self._setup = setup
 
     @discord.ui.button(label="Confirm ✓", style=discord.ButtonStyle.success)
-    async def confirm(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         user_id = str(interaction.user.id)
         await _save_preferences(user_id, self._setup)
         await interaction.response.edit_message(
@@ -401,9 +380,7 @@ class _ConfirmView(discord.ui.View):
         )
 
     @discord.ui.button(label="Cancel ✗", style=discord.ButtonStyle.danger)
-    async def cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.edit_message(
             content="Alert setup cancelled. Run `/alert` any time to start over.",
             view=None,
@@ -443,11 +420,11 @@ def _interval_display(mins: int) -> str:
 
 def _build_summary(setup: _AlertSetup) -> str:
     role_str = " + ".join(
-        "Internships" if r == "intern" else "New Grad / Entry Level"
-        for r in setup.role_types
+        "Internships" if r == "intern" else "New Grad / Entry Level" for r in setup.role_types
     )
     disc_str = (
-        "SWE + EE (all)" if not setup.disciplines
+        "SWE + EE (all)"
+        if not setup.disciplines
         else " + ".join(d.upper() for d in setup.disciplines)
     )
     lines = [
@@ -462,9 +439,7 @@ def _build_summary(setup: _AlertSetup) -> str:
     if setup.companies:
         lines.append(f"**Companies:** {', '.join(setup.companies)}")
     if setup.quiet_hours_start:
-        lines.append(
-            f"**Quiet hours (UTC):** {setup.quiet_hours_start} – {setup.quiet_hours_end}"
-        )
+        lines.append(f"**Quiet hours (UTC):** {setup.quiet_hours_start} – {setup.quiet_hours_end}")
     lines.append("\n*Confirm to save, or Cancel to discard.*")
     return "\n".join(lines)
 
@@ -553,22 +528,16 @@ class _AlertPageView(discord.ui.View):
         embeds = [build_db_row_embed(r) for r in rows]
         page = new_offset // _PAGE_SIZE + 1
         n = len(rows)
-        header = (
-            f"**Page {page}** — {n} job{'s' if n != 1 else ''} matching your preferences:"
-        )
+        header = f"**Page {page}** — {n} job{'s' if n != 1 else ''} matching your preferences:"
         new_view = _AlertPageView(self._user_id, self._ingested_after, new_offset, has_more)
         await interaction.response.edit_message(content=header, embeds=embeds, view=new_view)
 
     @discord.ui.button(label="← Prev", style=discord.ButtonStyle.secondary)
-    async def prev_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._go_to(interaction, max(0, self._offset - _PAGE_SIZE))
 
     @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary)
-    async def next_page(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._go_to(interaction, self._offset + _PAGE_SIZE)
 
 
@@ -625,9 +594,9 @@ async def send_user_alerts(bot: discord.Client) -> None:
         # New users (no last_alerted_at) get the last 24 h only, to avoid a flood.
         ingested_after: str | None = prefs.get("last_alerted_at")
         if ingested_after is None:
-            ingested_after = (
-                datetime.now(timezone.utc) - timedelta(hours=24)
-            ).strftime("%Y-%m-%d %H:%M:%S")
+            ingested_after = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
 
         # Tick the clock even when no new jobs found, so the interval resets.
         await db.update_last_alerted(user_id)
@@ -647,10 +616,7 @@ async def send_user_alerts(bot: discord.Client) -> None:
             continue
 
         count = len(jobs)
-        header = (
-            f"**{count} new job{'s' if count != 1 else ''}** "
-            "matching your alert preferences:"
-        )
+        header = f"**{count} new job{'s' if count != 1 else ''}** matching your alert preferences:"
         first_page = jobs[:_PAGE_SIZE]
         has_more = count > _PAGE_SIZE
         embeds = [build_db_row_embed(r) for r in first_page]
@@ -660,7 +626,5 @@ async def send_user_alerts(bot: discord.Client) -> None:
             await user.send(content=header, embeds=embeds, view=view)
             logger.info("Sent %d job(s) to user %s (has_more=%s)", count, user_id, has_more)
         except discord.Forbidden:
-            logger.warning(
-                "Cannot DM user %s (DMs closed) — disabling their alerts", user_id
-            )
+            logger.warning("Cannot DM user %s (DMs closed) — disabling their alerts", user_id)
             await db.upsert_user_prefs(user_id, dm_enabled=0)

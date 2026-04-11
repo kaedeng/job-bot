@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 
 from bot import db, scheduler
-
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -22,9 +21,7 @@ def _make_client(responses: list[httpx.Response]) -> httpx.AsyncClient:
 
 
 def _resp(status: int, method: str = "GET") -> httpx.Response:
-    return httpx.Response(
-        status, request=httpx.Request(method, "https://example.com/jobs/1")
-    )
+    return httpx.Response(status, request=httpx.Request(method, "https://example.com/jobs/1"))
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +114,7 @@ class TestPollLiveness:
         await scheduler.poll_liveness()
 
         import aiosqlite
+
         async with aiosqlite.connect(liveness_db) as conn:
             cursor = await conn.execute(
                 "SELECT is_active FROM job_postings WHERE id = ?", (posting_id,)
@@ -134,14 +132,15 @@ class TestPollLiveness:
         await scheduler.poll_liveness()
 
         import aiosqlite
+
         async with aiosqlite.connect(liveness_db) as conn:
             cursor = await conn.execute(
                 "SELECT is_active, last_checked_at FROM job_postings WHERE id = ?",
                 (posting_id,),
             )
             row = await cursor.fetchone()
-        assert row[0] == 1           # still active
-        assert row[1] is not None    # timestamp updated
+        assert row[0] == 1  # still active
+        assert row[1] is not None  # timestamp updated
 
     async def test_skips_postings_checked_recently(self, liveness_db, monkeypatch):
         import aiosqlite
@@ -192,10 +191,9 @@ class TestPollLiveness:
         await scheduler.poll_liveness()
 
         import aiosqlite
+
         async with aiosqlite.connect(liveness_db) as conn:
-            cursor = await conn.execute(
-                "SELECT id, is_active FROM job_postings ORDER BY id"
-            )
+            cursor = await conn.execute("SELECT id, is_active FROM job_postings ORDER BY id")
             rows = {r[0]: r[1] for r in await cursor.fetchall()}
         assert rows[id_live] == 1
         assert rows[id_dead] == 0
