@@ -31,9 +31,6 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 
-# uv
-uv.lock
-
 # Logs
 *.log
 
