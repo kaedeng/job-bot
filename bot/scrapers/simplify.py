@@ -48,7 +48,7 @@ async def scrape(
                 continue
 
             locations = item.get("locations", [])
-            location_str = ", ".join(locations) if locations else ""
+            location_str = "; ".join(locations) if locations else ""
 
             all_jobs.append(
                 Job(

@@ -162,6 +162,15 @@ class TestClassifyJob:
     def test_title_neither(self):
         assert classify_job(_job(title="Software Engineer")) == (False, False)
 
+    def test_international_does_not_match_intern(self):
+        # "International" contains "intern" as a prefix — must not fire.
+        is_intern, _ = classify_job(_job(title="International Software Engineer"))
+        assert not is_intern
+
+    def test_internal_does_not_match_intern(self):
+        is_intern, _ = classify_job(_job(title="Internal Tools Engineer"))
+        assert not is_intern
+
     # --- Description signals ---
     def test_desc_intern_signal(self):
         job = _job(title="Software Engineer", description="This is an internship position.")
@@ -173,8 +182,16 @@ class TestClassifyJob:
         _, is_new_grad = classify_job(job)
         assert is_new_grad
 
-    def test_desc_senior_exp_overrides(self):
+    def test_desc_senior_exp_downweights_but_title_wins(self):
+        # Title "Intern" = 3 pts; "5 years experience" = +2 to other.
+        # Intern (3) > other (2) → still classified as intern.
         job = _job(title="Software Engineer Intern", description="Requires 5 years of experience.")
+        is_intern, _ = classify_job(job)
+        assert is_intern
+
+    def test_desc_heavy_senior_exp_loses_to_no_title_signal(self):
+        # No title signal + 6+ years in description → other wins → excluded.
+        job = _job(title="Software Engineer", description="Requires 8 years of experience.")
         assert classify_job(job) == (False, False)
 
     def test_desc_html_stripped(self):

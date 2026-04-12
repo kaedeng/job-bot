@@ -10,11 +10,13 @@ from bot import commands
 from bot.config import settings
 from bot.db import init_db
 from bot.scheduler import (
+    poll_amazon,
     poll_ashby,
     poll_greenhouse,
     poll_lever,
     poll_simplify,
     poll_user_alerts,
+    poll_workday,
     run_custom_scrapers,
     set_bot,
     set_channel,
@@ -65,6 +67,8 @@ async def on_ready() -> None:
         poll_lever(),
         poll_ashby(),
         poll_simplify(),
+        poll_workday(),
+        poll_amazon(),
         *run_custom_scrapers(),
     )
 

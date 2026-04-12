@@ -275,7 +275,7 @@ class TestSimplify:
         mock_transport.add([])
         client = mock_transport.build_client()
         jobs = await simplify.scrape(client)
-        assert jobs[0].location == "San Francisco, CA, Seattle, WA"
+        assert jobs[0].location == "San Francisco, CA; Seattle, WA"
 
     async def test_empty_locations(self, mock_transport):
         mock_transport.add(

@@ -122,7 +122,7 @@ def register(tree: app_commands.CommandTree) -> None:
     @tree.command(name="query", description="Search the jobs database")
     @app_commands.describe(
         keyword="Title or description keyword(s), comma-separated for OR (e.g. 'Python,React')",
-        company="Company slug(s), comma-separated for OR (e.g. 'stripe,ramp')",
+        company="Company name(s), comma-separated for OR (e.g. 'Stripe,Ramp')",
         role="Role type(s): intern, new_grad, all — comma-separated for OR",
         discipline="Discipline(s): swe, ee — comma-separated for OR (e.g. 'swe,ee')",
         state="US state(s), comma-separated for OR (e.g. 'CO,WA')",

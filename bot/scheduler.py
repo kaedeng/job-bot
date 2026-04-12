@@ -21,6 +21,7 @@ from bot.models import Job
 from bot.notifier import notify
 from bot.scrapers import ashby, greenhouse, lever, simplify, workday
 from bot.scrapers.custom import REGISTRY as _CUSTOM_REGISTRY
+from bot.scrapers.custom import amazon
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ _bot: discord.Client | None = None
 # Health tracking: consecutive failure counts per scraper (auto-populated)
 _FAILURE_ALERT_THRESHOLD = 3
 _scraper_failures: dict[str, int] = {
-    name: 0 for name in ("greenhouse", "lever", "ashby", "simplify", "workday", *_CUSTOM_REGISTRY)
+    name: 0 for name in ("greenhouse", "lever", "ashby", "simplify", "workday", "amazon", *_CUSTOM_REGISTRY)
 }
 
 
@@ -143,7 +144,36 @@ async def poll_ashby() -> None:
 
 
 async def poll_workday() -> None:
-    await _poll_platform("workday", settings.workday_slugs, workday.scrape)
+    """Poll all configured Workday career boards.
+
+    Loads already-seen job IDs from the DB once and passes them to each scrape call
+    so that description fetches are skipped for jobs we've already stored.  Full
+    pagination still runs for every board — Workday sort order isn't reliably
+    newest-first, so we can't safely stop early without risking missed postings.
+    """
+    try:
+        seen_ids = await db.get_seen_ids_for_source("workday")
+        async with httpx.AsyncClient(timeout=20) as client:
+            all_jobs: list[Job] = []
+            for slug in settings.workday_slugs:
+                all_jobs.extend(await workday.scrape(slug, client, seen_ids=seen_ids))
+                await asyncio.sleep(1)
+            await _process_jobs(all_jobs)
+        _record_success("workday")
+    except Exception as exc:
+        _record_failure("workday", exc)
+        await _maybe_alert_health()
+
+
+async def poll_amazon() -> None:
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            jobs = await amazon.scrape(client)
+            await _process_jobs(jobs)
+        _record_success("amazon")
+    except Exception as exc:
+        _record_failure("amazon", exc)
+        await _maybe_alert_health()
 
 
 async def poll_simplify() -> None:
@@ -268,13 +298,8 @@ def start_scheduler() -> AsyncIOScheduler:
         id="ashby",
         next_run_time=None,
     )
-    scheduler.add_job(
-        poll_workday,
-        "interval",
-        minutes=interval,
-        id="workday",
-        next_run_time=None,
-    )
+    scheduler.add_job(poll_workday, "interval", minutes=interval, id="workday")
+    scheduler.add_job(poll_amazon, "interval", minutes=interval, id="amazon")
     scheduler.add_job(
         poll_simplify,
         "interval",

@@ -4,22 +4,43 @@ import re
 
 from bot.models import Job
 
-# --- Title filters ---
+# --- Classification signal regexes ---
 
-# Intern signals in title
-_INTERN_TITLE = re.compile(
-    r"\b(intern(?:ship)?|co[\s-]?op)\b",
+# Intern signals.  Negative lookaheads block "international" (ation) and
+# "internal" / "internally" (al\b) which share the "intern" prefix.
+_INTERN_RE = re.compile(
+    r"\bintern(?!al\b|ation)(?:ship)?\b|\bco[\s-]?op\b",
     re.IGNORECASE,
 )
 
-# New-grad / entry-level signals in title — includes explicit level markers and
-# junior variants that often appear without saying "entry level"
-_NEW_GRAD_TITLE = re.compile(
-    r"\b(new\s*grad(?:uate)?|university\s*grad(?:uate)?|entry[\s-]*level"
-    r"|junior|jr\.?|associate(?:\s+engineer)?|early[\s-]*career"
-    r"|campus\s+(?:hire|recruit)|swe\s*[i1]\b|software\s+engineer\s+[i1]\b|l3)\b",
+# New-grad / entry-level signals (used for both title and description)
+_NEW_GRAD_RE = re.compile(
+    r"\b(new\s*grad(?:uates?)?|recent\s*grad(?:uates?)?|university\s*grad(?:uates?)?"
+    r"|entry[\s-]*level|junior|jr\.?|associate(?:\s+engineer)?|early[\s-]*career"
+    r"|campus\s+(?:hire|recruit)|swe\s*[i1]\b|software\s+engineer\s+[i1]\b|l3"
+    r"|no\s+(?:prior\s+)?(?:professional\s+)?experience\s+required|fresher)\b",
     re.IGNORECASE,
 )
+
+# Senior / management / leadership signals
+_OTHER_RE = re.compile(
+    r"\b(senior|sr\.|staff|principal|manager|lead|director"
+    r"|vice\s+president|vp|head\s+of|executive)\b",
+    re.IGNORECASE,
+)
+
+# Years-of-experience extraction — captures the lower bound of ranges like
+# "3-5 years", "4+ years of experience", "minimum of 2 years experience"
+_YOE_RE = re.compile(
+    r"(?:minimum\s+(?:of\s+)?|at\s+least\s+)?"
+    r"(\d+)(?:\s*[-–]\s*\d+)?\+?\s*(?:or\s+more\s+)?"
+    r"years?\s+(?:of\s+)?(?:\w+\s+)*experience",
+    re.IGNORECASE,
+)
+
+# Score weights
+_TITLE_SCORE = 3
+_DESC_SCORE = 1
 
 # Broad tech discipline check — storage gate (is_tech_job).
 # Covers both SWE and EE so both get stored in job_postings.
@@ -51,28 +72,6 @@ TITLE_EXCLUDE = re.compile(
     re.IGNORECASE,
 )
 
-# --- Description classifiers ---
-
-# Intern signals in description
-_INTERN_DESC = re.compile(
-    r"\b(intern(?:ship)?|co[\s-]?op)\b",
-    re.IGNORECASE,
-)
-
-# New-grad / entry-level signals in description
-_NEW_GRAD_DESC = re.compile(
-    r"(new\s*grad(?:uate)?|recent\s*grad(?:uate)?|entry[\s-]*level"
-    r"|0\s*[-–to]+\s*[23]\s*years?"
-    r"|no\s+(?:prior\s+)?(?:professional\s+)?experience\s+required"
-    r"|early[\s-]*career|fresh(?:er|man)?)",
-    re.IGNORECASE,
-)
-
-# Senior experience requirement — if description demands 4+ years, exclude
-_SENIOR_EXP = re.compile(
-    r"\b([4-9]|\d{2})\+?\s*(?:or\s+more\s+)?years?\s+of\s+(?:\w+\s+)?experience",
-    re.IGNORECASE,
-)
 
 # --- Location filters ---
 
@@ -204,7 +203,18 @@ US_CITIES = {
     "pittsburgh",
 }
 
-US_KEYWORDS = {"united states", "usa", "u.s.", "remote"}
+US_KEYWORDS = {"united states", "usa", "u.s."}
+
+# Regions that explicitly exclude US workers even when combined with "remote".
+# "global" / "worldwide" are intentionally omitted — those jobs are US-accessible.
+_NON_US_REGION_RE = re.compile(
+    r"\b(emea|europe(?:an)?\b|eu\b|apac|asia[\s-]pacific|latam|latin\s*america|mena)\b",
+    re.IGNORECASE,
+)
+
+# Splits raw location strings on semicolons and " / " (multi-location separator used
+# by Greenhouse, Lever etc.).  Avoids splitting on bare "/" to preserve "w/o", "24/7".
+_LOCATION_SPLIT_RE = re.compile(r"\s*/\s*|;")
 
 # Precompiled single-pass regex for all US state abbreviations
 _US_STATE_ABBREV_RE = re.compile(r"\b(" + "|".join(US_STATE_ABBREVS) + r")\b")
@@ -263,6 +273,12 @@ _STATE_TO_ABBREV: dict[str, str] = {
     "wyoming": "WY",
     "district of columbia": "DC",
 }
+
+# State names sorted longest-first so "west virginia" is matched before "virginia",
+# "north carolina" before "carolina", etc.
+_SORTED_STATES: list[tuple[str, str]] = sorted(
+    _STATE_TO_ABBREV.items(), key=lambda x: len(x[0]), reverse=True
+)
 
 # International country name/variant -> ISO 3166-1 alpha-2 code.
 # Ordered so that longer/more-specific strings are checked before shorter ones
@@ -323,23 +339,158 @@ _COUNTRY_TO_CODE: dict[str, str] = {
     "israel": "IL",
     "uae": "AE",
     "united arab emirates": "AE",
+    # Additional full country names not in the original list
+    "vietnam": "VN",
+    "malaysia": "MY",
+    "philippines": "PH",
+    "thailand": "TH",
+    "indonesia": "ID",
+    "saudi arabia": "SA",
+    "costa rica": "CR",
+    "south africa": "ZA",
+    "nigeria": "NG",
+    "kenya": "KE",
+    "egypt": "EG",
+    "pakistan": "PK",
+    "bangladesh": "BD",
+    "qatar": "QA",
+    "bahrain": "BH",
+    "kuwait": "KW",
+    "oman": "OM",
+    "morocco": "MA",
+    "ghana": "GH",
+    "ethiopia": "ET",
+    "panama": "PA",
+    "peru": "PE",
+    "sri lanka": "LK",
+    "myanmar": "MM",
+    "cambodia": "KH",
+    "ecuador": "EC",
+    "venezuela": "VE",
+    "bolivia": "BO",
+    "uruguay": "UY",
+    "paraguay": "PY",
+    # ISO 3166-1 alpha-3 codes — used by Workday, Oracle, SAP ATS exports
+    # e.g. "IND.Chennai", "MEX.Guadalajara", "KSA.Riyadh"
+    # Word-boundary regexes (built from _COUNTRY_DETECT) prevent substring matches.
+    "ind": "IN",   # India
+    "mex": "MX",   # Mexico
+    "can": "CA",   # Canada
+    "gbr": "GB",   # United Kingdom
+    "aus": "AU",   # Australia
+    "jpn": "JP",   # Japan
+    "chn": "CN",   # China
+    "bra": "BR",   # Brazil
+    "deu": "DE",   # Germany
+    "fra": "FR",   # France
+    "ita": "IT",   # Italy
+    "esp": "ES",   # Spain
+    "nld": "NL",   # Netherlands
+    "pol": "PL",   # Poland
+    "swe": "SE",   # Sweden
+    "sgp": "SG",   # Singapore
+    "isr": "IL",   # Israel
+    "twn": "TW",   # Taiwan
+    "kor": "KR",   # South Korea
+    "vnm": "VN",   # Vietnam
+    "mys": "MY",   # Malaysia
+    "phl": "PH",   # Philippines
+    "tha": "TH",   # Thailand
+    "idn": "ID",   # Indonesia
+    "sau": "SA",   # Saudi Arabia (official alpha-3)
+    "ksa": "SA",   # Saudi Arabia (informal but common in Gulf region)
+    "cri": "CR",   # Costa Rica
+    "zaf": "ZA",   # South Africa
+    "arg": "AR",   # Argentina
+    "col": "CO",   # Colombia
+    "chl": "CL",   # Chile
+    "per": "PE",   # Peru
+    "irl": "IE",   # Ireland
+    "nzl": "NZ",   # New Zealand
+    "nor": "NO",   # Norway
+    "dnk": "DK",   # Denmark
+    "fin": "FI",   # Finland
+    "che": "CH",   # Switzerland
+    "aut": "AT",   # Austria
+    "bel": "BE",   # Belgium
+    "grc": "GR",   # Greece
+    "tur": "TR",   # Turkey
+    "cze": "CZ",   # Czech Republic
+    "rou": "RO",   # Romania
+    "hun": "HU",   # Hungary
+    "ukr": "UA",   # Ukraine
+    "prt": "PT",   # Portugal
+    "are": "AE",   # UAE
+    "egy": "EG",   # Egypt
+    "nga": "NG",   # Nigeria
+    "pak": "PK",   # Pakistan
+    "bgd": "BD",   # Bangladesh
+    "qat": "QA",   # Qatar
+    "kwt": "KW",   # Kuwait
+    "omn": "OM",   # Oman
+    "bhr": "BH",   # Bahrain
+    "mar": "MA",   # Morocco
+    "ken": "KE",   # Kenya
     # Abbreviations — checked last to avoid shadowing full names
     "uk": "GB",
 }
 
+# Precompiled (pattern, name, iso_code) triples — longest name first so
+# "united kingdom" is tried before "uk".  Word-boundary anchors prevent short
+# codes from matching as substrings: "uk" must not fire inside "tukwila",
+# and "india" must not fire inside "indiana".
+_COUNTRY_DETECT: list[tuple[re.Pattern[str], str, str]] = [
+    (re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE), name, code)
+    for name, code in sorted(_COUNTRY_TO_CODE.items(), key=lambda x: len(x[0]), reverse=True)
+]
+
 
 def _is_us_location(location: str) -> bool:
+    """Return True if any segment of the location string is US-based or US-accessible remote.
+
+    Splits on both ";" and " / " so multi-location strings like
+    "New York, NY / London, UK" are checked segment-by-segment.
+
+    Unrecognized/unparseable segments are assumed to be US (the scraper list is
+    curated toward US companies, so opaque strings like "2 Locations" or
+    "Arlington - 1801 S Bell" are more likely to be US than not).
+    The only exception is explicit non-US remote qualifiers like "Remote - EMEA",
+    which are skipped rather than assumed.
+
+    Fallback: some scrapers (Lever) emit comma-separated multi-country strings
+    without semicolons, e.g. "San Francisco, Seattle, Remote in US or Canada".
+    These are not split by _LOCATION_SPLIT_RE, so parse_location sees the whole
+    string and may fire on the first detected non-US country.  If the segment
+    loop exits without a US hit, a secondary raw-signal scan on the original
+    string catches explicit US indicators (keywords, cities, state abbreviations).
+    """
+    if not location.strip():
+        return False
+    for seg in _LOCATION_SPLIT_RE.split(location):
+        seg = seg.strip()
+        if not seg:
+            continue
+        country, _, _ = parse_location(seg)
+        if country == "US":
+            return True
+        if country is None:
+            # Segment is unrecognised — assume US unless it's explicitly a
+            # non-US remote qualifier (e.g. "Remote - EMEA", "Remote Europe").
+            if _IS_REMOTE.search(seg) and _NON_US_REGION_RE.search(seg):
+                continue  # explicitly non-US remote — do not assume
+            return True
+
+    # Fallback raw-signal scan for strings that weren't split (no ";" or " / ")
+    # but still contain explicit US indicators alongside a non-US country.
+    # e.g. "US, Canada", "San Francisco, Seattle, Remote in US or Canada"
     loc_lower = location.lower()
-
-    if any(kw in loc_lower for kw in US_KEYWORDS):
-        return True
-    if any(state in loc_lower for state in US_STATES):
-        return True
-    if any(city in loc_lower for city in US_CITIES):
-        return True
-
-    # Single-pass check for any US state abbreviation
-    if _US_STATE_ABBREV_RE.search(location):
+    if (
+        any(kw in loc_lower for kw in US_KEYWORDS)
+        or re.search(r"\bUS\b", location)
+        or any(city in loc_lower for city in US_CITIES)
+        or _US_STATE_ABBREV_RE.search(location)
+        or any(state in loc_lower for state in US_STATES)
+    ):
         return True
 
     return False
@@ -381,13 +532,20 @@ def parse_location(location: str) -> tuple[str | None, str | None, str | None]:
     Returns a 3-tuple of nullable strings. Best-effort: fields that can't be
     inferred are returned as None.
 
+    International country detection runs FIRST so that a US state abbreviation
+    that coincidentally appears in a foreign location string (e.g. "IN" in
+    "Bangalore, IN" for India, "PE" in "Lima, PE" for Peru) doesn't trigger a
+    false US match.
+
     Examples:
         "San Francisco, CA"              -> ("US", "CA", "San Francisco")
         "Remote"                         -> ("US", None, None)
+        "Remote - EMEA"                  -> (None, None, None)
         "New York, NY"                   -> ("US", "NY", "New York")
         "Warsaw, Masovian Voivodeship, Poland" -> ("PL", None, "Warsaw")
         "London, UK"                     -> ("GB", None, "London")
         "Toronto, ON, Canada"            -> ("CA", None, "Toronto")
+        "Bangalore, IN, India"           -> ("IN", None, "Bangalore")
         ""                               -> (None, None, None)
     """
     loc = location.strip()
@@ -396,12 +554,40 @@ def parse_location(location: str) -> tuple[str | None, str | None, str | None]:
 
     loc_lower = loc.lower()
 
-    # --- US detection ---
+    # --- Step 1: International country detection (word-boundary, longest-match first) ---
+    # Uses precompiled word-boundary regexes so short codes like "uk" don't fire inside
+    # words ("tukwila") and full names like "india" don't fire inside "indiana".
+    intl_country: str | None = None
+    matched_country_name: str | None = None
+    for pattern, name, code in _COUNTRY_DETECT:
+        if pattern.search(loc):
+            intl_country = code
+            matched_country_name = name
+            break
+
+    if intl_country is not None:
+        # Known non-US country found — skip US checks entirely.
+        city: str | None = None
+        if "," in loc:
+            first_seg = loc.split(",")[0].strip()
+            # If the first comma segment IS the country name, the city comes next.
+            # e.g. "Israel, Yokneam" → city="Yokneam", not "Israel"
+            if matched_country_name and first_seg.lower() == matched_country_name:
+                parts = loc.split(",", 2)
+                city = parts[1].strip() or None if len(parts) > 1 else None
+            else:
+                city = first_seg or None
+        return intl_country, None, city
+
+    # --- Step 2: US detection ---
+    # "remote" without a non-US regional qualifier (EMEA, APAC, etc.) is US-accessible.
+    is_remote_us = bool(_IS_REMOTE.search(loc)) and not bool(_NON_US_REGION_RE.search(loc))
     abbrev_match = _US_STATE_ABBREV_RE.search(loc)
     is_us = (
-        any(kw in loc_lower for kw in US_KEYWORDS)
+        is_remote_us
+        or any(kw in loc_lower for kw in US_KEYWORDS)
         or any(state in loc_lower for state in US_STATES)
-        or any(city in loc_lower for city in US_CITIES)
+        or any(city_kw in loc_lower for city_kw in US_CITIES)
         or abbrev_match is not None
     )
 
@@ -411,45 +597,36 @@ def parse_location(location: str) -> tuple[str | None, str | None, str | None]:
         # State abbreviation first (e.g. ", CA" or "(NY)")
         state: str | None = abbrev_match.group(1) if abbrev_match else None
 
-        # Fall back to full state name
+        # Fall back to full state name — longest-first so "west virginia" beats "virginia"
         if state is None:
-            for name, abbrev in _STATE_TO_ABBREV.items():
+            for name, abbrev in _SORTED_STATES:
                 if name in loc_lower:
                     state = abbrev
                     break
 
         # City — known set first, then first comma segment
-        city: str | None = None
+        city = None
         for known_city in US_CITIES:
             if known_city in loc_lower:
                 city = known_city.title()
                 break
         if city is None and "," in loc:
             candidate = loc.split(",")[0].strip()
-            if candidate.lower() not in US_STATES and candidate not in US_STATE_ABBREVS:
+            # Skip candidate if it's a country token ("US", "USA", "United States"),
+            # bare state name, or state abbreviation — e.g. "US, CA, Pleasanton" and
+            # "USA, CA, Santa Clara" should not yield city="US" / city="USA".
+            _country_tokens = US_KEYWORDS | {"us", "america"}
+            if (
+                candidate.lower() not in US_STATES
+                and candidate not in US_STATE_ABBREVS
+                and candidate.lower() not in _country_tokens
+            ):
                 city = candidate or None
 
         return country, state, city
 
-    # --- International detection ---
-    # Check longest keys first so "united kingdom" matches before "uk"
-    country = None
-    for name, code in sorted(_COUNTRY_TO_CODE.items(), key=lambda x: len(x[0]), reverse=True):
-        if name in loc_lower:
-            country = code
-            break
-
-    # City is almost always the first comma-separated segment
-    city = None
-    if "," in loc:
-        candidate = loc.split(",")[0].strip()
-        if candidate:
-            city = candidate
-    elif country is None:
-        # Single-token location with no recognised country (e.g. "Remote - EMEA")
-        pass
-
-    return country, None, city
+    # Unknown / unrecognised location
+    return None, None, None
 
 
 _IS_REMOTE = re.compile(r"\bremote\b", re.IGNORECASE)
@@ -458,12 +635,16 @@ _IS_REMOTE = re.compile(r"\bremote\b", re.IGNORECASE)
 def parse_locations(location_raw: str) -> list[dict]:
     """Parse a raw location string into a list of location dicts.
 
-    Splits on semicolons for multi-location postings. Each dict has:
+    Splits on semicolons AND " / " separators (Greenhouse/Lever multi-location
+    format) so each office/remote option gets its own DB row.  Each dict has:
         country (str|None), state (str|None), city (str|None), is_remote (bool)
 
     Examples:
         "San Francisco, CA"
             -> [{"country":"US","state":"CA","city":"San Francisco","is_remote":False}]
+        "New York, NY / London, UK"
+            -> [{"country":"US","state":"NY","city":"New York","is_remote":False},
+                {"country":"GB","state":None,"city":"London","is_remote":False}]
         "London, UK; Remote-Friendly, United States; San Francisco, CA"
             -> [{"country":"GB",...,"is_remote":False},
                 {"country":"US",...,"is_remote":True},
@@ -472,7 +653,7 @@ def parse_locations(location_raw: str) -> list[dict]:
     if not location_raw.strip():
         return []
 
-    segments = [s.strip() for s in location_raw.split(";") if s.strip()]
+    segments = [s.strip() for s in _LOCATION_SPLIT_RE.split(location_raw) if s.strip()]
     if not segments:
         segments = [location_raw.strip()]
 
@@ -495,37 +676,80 @@ def strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
 
 
+def _extract_min_years(text: str) -> int | None:
+    """Return the lowest years-of-experience figure mentioned in text, or None."""
+    values = [int(m.group(1)) for m in _YOE_RE.finditer(text)]
+    return min(values) if values else None
+
+
 def classify_job(job: Job) -> tuple[bool, bool]:
-    """Classify a job as intern and/or new-grad.
+    """Score-based classification into (is_intern, is_new_grad).
 
-    Returns:
-        (is_intern, is_new_grad) — both can be True for combined postings.
+    Three competing piles — intern, new_grad, other — accumulate points from
+    keyword signals and years-of-experience extraction.  The pile(s) with the
+    highest score win; if other strictly outscores both entry-level piles the job
+    is excluded (returns False, False).  Ties between intern and new_grad produce
+    (True, True) for combined postings.
 
-    Priority:
-        1. Source trust — Simplify repos are pre-curated; trust the list name directly.
-        2. Title signals — fast, always available.
-        3. Description signals — richer but optional; skipped when description is absent.
+    Scoring:
+        Title keyword match  → 3 pts to matching pile
+        Desc keyword match   → 1 pt
+        Years of experience  → 0-2 yrs: +2 new_grad; 3 yrs: +1 new_grad;
+                               4-5 yrs: +2 other; 6+ yrs: +3 other
+
+    Source trust (Simplify) bypasses scoring entirely.
     """
-    # 1. Source-level trust (Simplify repos are already curated by type)
+    # Source-level trust — Simplify repos are pre-curated by type
     if job.source == "simplify-intern":
         return True, False
     if job.source == "simplify-newgrad":
         return False, True
 
-    is_intern = bool(_INTERN_TITLE.search(job.title))
-    is_new_grad = bool(_NEW_GRAD_TITLE.search(job.title))
+    intern_score = 0
+    new_grad_score = 0
+    other_score = 0
 
-    # 2. Description scanning (HTML stripped before matching)
+    # Title signals (3 pts each)
+    if _INTERN_RE.search(job.title):
+        intern_score += _TITLE_SCORE
+    if _NEW_GRAD_RE.search(job.title):
+        new_grad_score += _TITLE_SCORE
+    if _OTHER_RE.search(job.title):
+        other_score += _TITLE_SCORE
+
+    # Description signals (1 pt each) + years-of-experience scoring
     if job.description:
         desc = strip_html(job.description)
-        if _SENIOR_EXP.search(desc):
-            # Description explicitly asks for 4+ years — not entry level
-            return False, False
-        if not is_intern and _INTERN_DESC.search(desc):
-            is_intern = True
-        if not is_new_grad and _NEW_GRAD_DESC.search(desc):
-            is_new_grad = True
+        if _INTERN_RE.search(desc):
+            intern_score += _DESC_SCORE
+        if _NEW_GRAD_RE.search(desc):
+            new_grad_score += _DESC_SCORE
+        if _OTHER_RE.search(desc):
+            other_score += _DESC_SCORE
 
+        years = _extract_min_years(desc)
+        if years is not None:
+            if years <= 2:
+                new_grad_score += 2
+            elif years == 3:
+                new_grad_score += 1
+            elif years <= 5:
+                other_score += 2
+            else:  # 6+
+                other_score += 3
+
+    # No signals at all → unclassified
+    if intern_score == 0 and new_grad_score == 0 and other_score == 0:
+        return False, False
+
+    # Other pile strictly wins → not entry-level
+    if other_score > intern_score and other_score > new_grad_score:
+        return False, False
+
+    # Assign entry-level piles at or tied for the top score
+    max_entry = max(intern_score, new_grad_score)
+    is_intern = intern_score > 0 and intern_score >= max_entry
+    is_new_grad = new_grad_score > 0 and new_grad_score >= max_entry
     return is_intern, is_new_grad
 
 

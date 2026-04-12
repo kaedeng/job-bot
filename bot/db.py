@@ -143,6 +143,16 @@ async def is_seen(source: str, job_id: str) -> bool:
     return await cursor.fetchone() is not None
 
 
+async def get_seen_ids_for_source(source: str) -> frozenset[str]:
+    """Return all known job_ids for a given source as a frozenset."""
+    conn = await get_conn()
+    cursor = await conn.execute(
+        "SELECT job_id FROM job_postings WHERE source = ?",
+        (source,),
+    )
+    return frozenset(row[0] for row in await cursor.fetchall())
+
+
 async def filter_unseen(jobs: list[Job]) -> list[Job]:
     """Return only the jobs whose (source, job_id) pairs are not yet in the DB.
 
@@ -291,7 +301,7 @@ async def query_jobs(
 
     if companies:
         placeholders = ",".join("?" * len(companies))
-        jp_conditions.append(f"jp.company IN ({placeholders})")
+        jp_conditions.append(f"LOWER(jp.company) IN ({placeholders})")
         params.extend(c.lower() for c in companies)
 
     if "all" in roles:

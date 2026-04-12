@@ -109,7 +109,12 @@ async def _fetch_description(
         return None
 
 
-async def scrape(slug: str, client: httpx.AsyncClient, max_jobs: int | None = None) -> list[Job]:
+async def scrape(
+    slug: str,
+    client: httpx.AsyncClient,
+    max_jobs: int | None = None,
+    seen_ids: frozenset[str] | None = None,
+) -> list[Job]:
     """Scrape all active jobs from a Workday career board.
 
     Slug formats:
@@ -118,6 +123,10 @@ async def scrape(slug: str, client: httpx.AsyncClient, max_jobs: int | None = No
 
     Args:
         max_jobs: If set, stop after collecting this many jobs (useful for testing).
+        seen_ids: Job IDs already in the DB for this source. When provided, description
+            fetches are skipped for already-seen jobs — the listings are still fully
+            paginated (Workday sort order isn't reliably newest-first) but the expensive
+            per-job detail GETs are only made for genuinely new postings.
     """
     try:
         cfg = _parse_slug(slug)
@@ -183,8 +192,11 @@ async def scrape(slug: str, client: httpx.AsyncClient, max_jobs: int | None = No
 
         await asyncio.sleep(1)  # be polite between pages
 
-    # Fetch descriptions only for tech-relevant jobs to limit extra requests
+    # Fetch descriptions only for new tech-relevant jobs to limit extra requests.
+    # Already-seen jobs already have descriptions in the DB — skip them.
     tech_jobs = [j for j in jobs if is_tech_job(j)]
+    if seen_ids is not None:
+        tech_jobs = [j for j in tech_jobs if j.id not in seen_ids]
     if tech_jobs:
         logger.debug("Workday %s: fetching descriptions for %d tech jobs", slug, len(tech_jobs))
         path_to_desc: dict[str, str | None] = {}
