@@ -66,6 +66,7 @@ async def on_ready() -> None:
         poll_lever(),
         poll_ashby(),
         poll_simplify(),
+        poll_workday(),
         *run_custom_scrapers(),
     )
 
