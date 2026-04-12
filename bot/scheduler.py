@@ -21,7 +21,6 @@ from bot.models import Job
 from bot.notifier import notify
 from bot.scrapers import ashby, greenhouse, lever, simplify, workday
 from bot.scrapers.custom import REGISTRY as _CUSTOM_REGISTRY
-from bot.scrapers.custom import amazon
 
 logger = logging.getLogger(__name__)
 
@@ -165,17 +164,6 @@ async def poll_workday() -> None:
         await _maybe_alert_health()
 
 
-async def poll_amazon() -> None:
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            jobs = await amazon.scrape(client)
-            await _process_jobs(jobs)
-        _record_success("amazon")
-    except Exception as exc:
-        _record_failure("amazon", exc)
-        await _maybe_alert_health()
-
-
 async def poll_simplify() -> None:
     try:
         companies = (
@@ -299,7 +287,6 @@ def start_scheduler() -> AsyncIOScheduler:
         next_run_time=None,
     )
     scheduler.add_job(poll_workday, "interval", minutes=interval, id="workday")
-    scheduler.add_job(poll_amazon, "interval", minutes=interval, id="amazon")
     scheduler.add_job(
         poll_simplify,
         "interval",
