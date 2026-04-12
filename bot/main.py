@@ -15,6 +15,7 @@ from bot.scheduler import (
     poll_greenhouse,
     poll_lever,
     poll_simplify,
+    poll_workday,
     poll_user_alerts,
     poll_workday,
     run_custom_scrapers,
