@@ -46,7 +46,7 @@ _DESC_SCORE = 1
 # Covers both SWE and EE so both get stored in job_postings.
 DISCIPLINE_INCLUDE = re.compile(
     r"\b(software|swe|engineer(ing)?|developer|dev|data|ml"
-    r"|machine\s*learning|systems|platform|infrastructure"
+    r"|machine\s*learning|platform|infrastructure"
     r"|backend|frontend|full[\s-]?stack|devops|security|cloud"
     r"|electrical|hardware|embedded|firmware|fpga|asic|vlsi|pcb"
     r"|rf|analog|circuit|semiconductor|silicon|photonics)\b",
@@ -68,7 +68,8 @@ _EE_DISCIPLINE = re.compile(
 )
 
 TITLE_EXCLUDE = re.compile(
-    r"\b(senior|staff|principal|manager|lead|sr\.)",
+    r"\b(senior|sr\.|staff|principal|manager|mgr|lead|director"
+    r"|vice\s+president|vp|head\s+of|executive)\b",
     re.IGNORECASE,
 )
 

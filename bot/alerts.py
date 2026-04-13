@@ -80,19 +80,25 @@ class _Step2View(discord.ui.View):
         self._setup = setup
 
     @discord.ui.select(
-        placeholder="Select one or both...",
+        placeholder="Select one or more...",
         min_values=1,
-        max_values=2,
+        max_values=3,
         options=[
             discord.SelectOption(label="Software Engineering (SWE)", value="swe", emoji="💻"),
             discord.SelectOption(label="Electrical Engineering (EE)", value="ee", emoji="⚡"),
+            discord.SelectOption(
+                label="Unknown / Unclassified",
+                value="unknown",
+                emoji="❓",
+                description="Jobs that passed the tech gate but couldn't be classified",
+            ),
         ],
     )
     async def discipline_select(
         self, interaction: discord.Interaction, select: discord.ui.Select
     ) -> None:
         vals = list(select.values)
-        self._setup.disciplines = [] if set(vals) == {"swe", "ee"} else vals
+        self._setup.disciplines = [] if set(vals) == {"swe", "ee", "unknown"} else vals
         await interaction.response.edit_message(
             content=_header(3, "Location", "Where do you want to look for jobs?"),
             view=_Step3View(self._setup),
@@ -253,7 +259,7 @@ class _FiltersModal(discord.ui.Modal, title="Optional filters"):
         max_length=300,
     )
     companies_input: discord.ui.TextInput = discord.ui.TextInput(
-        label="Companies (slugs/names, comma-separated)",
+        label="Companies (names/slugs, comma-separated)",
         placeholder="e.g. stripe, ramp, anthropic",
         required=False,
         max_length=300,
@@ -262,15 +268,21 @@ class _FiltersModal(discord.ui.Modal, title="Optional filters"):
     def __init__(self, setup: _AlertSetup) -> None:
         super().__init__()
         self._setup = setup
+        # Pre-fill with any values already set (e.g. from /alert keyword: company: params)
+        if setup.keywords:
+            self.keywords_input.default = ", ".join(setup.keywords)
+        if setup.companies:
+            self.companies_input.default = ", ".join(setup.companies)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         self._setup.keywords = [
             k.strip().lower() for k in self.keywords_input.value.split(",") if k.strip()
         ]
         self._setup.companies = [
-            c.strip().lower() for c in self.companies_input.value.split(",") if c.strip()
+            c.strip() for c in self.companies_input.value.split(",") if c.strip()
         ]
-        await interaction.response.edit_message(
+        await interaction.response.defer()
+        await interaction.edit_original_response(
             content=_header(
                 6,
                 "Quiet hours (UTC)",
@@ -422,10 +434,11 @@ def _build_summary(setup: _AlertSetup) -> str:
     role_str = " + ".join(
         "Internships" if r == "intern" else "New Grad / Entry Level" for r in setup.role_types
     )
+    disc_label = {"swe": "SWE", "ee": "EE", "unknown": "Unknown"}
     disc_str = (
-        "SWE + EE (all)"
+        "SWE + EE + Unknown (all)"
         if not setup.disciplines
-        else " + ".join(d.upper() for d in setup.disciplines)
+        else " + ".join(disc_label.get(d, d.upper()) for d in setup.disciplines)
     )
     lines = [
         "**Confirm your alert settings:**\n",
@@ -456,6 +469,7 @@ async def _save_preferences(user_id: str, setup: _AlertSetup) -> None:
         quiet_hours_start=setup.quiet_hours_start,
         quiet_hours_end=setup.quiet_hours_end,
     )
+    await db.increment_keyword_stats(setup.keywords)
 
     # Determine the location_scope string for the DB
     if setup.location_scope == "state":
@@ -544,9 +558,17 @@ class _AlertPageView(discord.ui.View):
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 
-async def start_alert_setup(user: discord.User | discord.Member) -> None:
+async def start_alert_setup(
+    user: discord.User | discord.Member,
+    companies: list[str] | None = None,
+    keywords: list[str] | None = None,
+) -> None:
     """Send the first wizard step as a DM. Raises discord.Forbidden if DMs are off."""
     setup = _AlertSetup()
+    if companies:
+        setup.companies = companies
+    if keywords:
+        setup.keywords = keywords
     await user.send(
         content=_header(1, "Role types", "What types of roles do you want to be alerted about?"),
         view=_Step1View(setup),

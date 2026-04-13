@@ -31,7 +31,8 @@ _bot: discord.Client | None = None
 # Health tracking: consecutive failure counts per scraper (auto-populated)
 _FAILURE_ALERT_THRESHOLD = 3
 _scraper_failures: dict[str, int] = {
-    name: 0 for name in ("greenhouse", "lever", "ashby", "simplify", "workday", "amazon", *_CUSTOM_REGISTRY)
+    name: 0
+    for name in ("greenhouse", "lever", "ashby", "simplify", "workday", "amazon", *_CUSTOM_REGISTRY)
 }
 
 
@@ -116,12 +117,28 @@ async def _poll_platform(
     scrape_fn: Any,
     timeout: int = 20,
 ) -> None:
-    """Generic slug-based poll: iterate slugs, scrape, process, track health."""
+    """Generic slug-based poll: iterate slugs, scrape, process, track health.
+
+    After each slug is scraped we diff the returned job IDs against the DB and
+    increment missing_count for absent jobs; jobs absent for >= 2 consecutive
+    scrapes are marked inactive.
+    """
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             all_jobs: list[Job] = []
             for slug in slugs:
-                all_jobs.extend(await scrape_fn(slug, client))
+                jobs = await scrape_fn(slug, client)
+                all_jobs.extend(jobs)
+
+                # Scrape-diff: detect jobs that have disappeared from the listing
+                seen_ids = {j.id for j in jobs}
+                deactivated = await db.reconcile_missing_jobs(name, slug, seen_ids)
+                if deactivated:
+                    logger.info(
+                        "%s/%s: marked %d job(s) inactive (absent 2+ scrapes)",
+                        name, slug, deactivated,
+                    )
+
                 await asyncio.sleep(1)  # be polite
             await _process_jobs(all_jobs)
         _record_success(name)
@@ -314,7 +331,8 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(poll_user_alerts, "interval", minutes=2, id="user_alerts")
     # Periodic health check — re-alerts every hour while scrapers stay broken
     scheduler.add_job(_maybe_alert_health, "interval", minutes=60, id="health")
-    # Liveness verification — probe stored active postings every 6 hours
+    # URL liveness probe — catches dead Simplify/Workday links (not slug-based scrapers,
+    # which use scrape-diff instead). Runs every 6 hours, deferred first run.
     scheduler.add_job(poll_liveness, "interval", hours=6, id="liveness", next_run_time=None)
 
     scheduler.start()

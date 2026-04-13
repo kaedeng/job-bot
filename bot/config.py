@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Tuple, Type
 
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource, PydanticBaseSettingsSource
+
+_ENV_FILE = os.environ.get("ENV_FILE", ".env")
 
 _COMMA_SEP_FIELDS = frozenset(
     {
@@ -43,7 +46,7 @@ class _CommaSepDotEnv(DotEnvSettingsSource):
 
 
 class Settings(BaseSettings):
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": _ENV_FILE, "env_file_encoding": "utf-8"}
 
     discord_token: str
     discord_channel_id: int

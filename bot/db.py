@@ -9,6 +9,7 @@ import aiosqlite
 
 from bot.config import settings
 from bot.filters import strip_html
+from bot.keywords import extract_keywords
 from bot.models import Job
 
 _DESC_MAX_CHARS = 5000
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS job_postings (
     description_text TEXT,                           -- HTML-stripped description, max 5000 chars
     is_active        INTEGER   NOT NULL DEFAULT 1,   -- 0 once a liveness check returns 404
     last_checked_at  TIMESTAMP,                      -- last liveness probe timestamp
+    missing_count    INTEGER   NOT NULL DEFAULT 0,   -- consecutive scrape-diff misses
     UNIQUE (source, job_id)
 );
 
@@ -95,6 +97,12 @@ CREATE TABLE IF NOT EXISTS user_filter_rules (
     created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS keyword_stats (
+    keyword      TEXT      PRIMARY KEY,
+    use_count    INTEGER   NOT NULL DEFAULT 1,
+    last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_job_postings_active_ingested ON job_postings(is_active, ingested_at);
 CREATE INDEX IF NOT EXISTS idx_job_postings_last_checked    ON job_postings(last_checked_at);
 CREATE INDEX IF NOT EXISTS idx_job_locations_posting_id     ON job_locations(posting_id);
@@ -110,6 +118,7 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
         "ALTER TABLE job_postings ADD COLUMN description_text TEXT",
         "ALTER TABLE job_postings ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE job_postings ADD COLUMN last_checked_at TIMESTAMP",
+        "ALTER TABLE job_postings ADD COLUMN missing_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE user_preferences ADD COLUMN disciplines TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE user_preferences ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE user_preferences ADD COLUMN last_alerted_at TIMESTAMP",
@@ -122,10 +131,43 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def backfill_keyword_stats() -> int:
+    """Populate keyword_stats from all existing job_postings rows.
+
+    Iterates every posting's title + description_text, extracts keywords, and
+    upserts them into keyword_stats. Safe to call multiple times — use_count
+    accumulates rather than resets. Returns the number of postings processed.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    conn = await get_conn()
+    cursor = await conn.execute("SELECT title, description_text FROM job_postings")
+    rows = await cursor.fetchall()
+    if not rows:
+        return 0
+
+    log.info("backfill_keyword_stats: processing %d postings", len(rows))
+    for row in rows:
+        kws = extract_keywords(row[0], row[1])
+        if kws:
+            await increment_keyword_stats(kws)
+
+    log.info("backfill_keyword_stats: done")
+    return len(rows)
+
+
 async def init_db() -> None:
     conn = await get_conn()
     await conn.executescript(SCHEMA)
     await _migrate_db(conn)
+
+    # One-time backfill: if keyword_stats is empty but job_postings has rows,
+    # populate from existing data so autocomplete works immediately.
+    cursor = await conn.execute("SELECT COUNT(*) FROM keyword_stats")
+    count = (await cursor.fetchone())[0]
+    if count == 0:
+        await backfill_keyword_stats()
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +272,7 @@ async def store_jobs_batch(
         )
 
         if cursor.rowcount == 0:
-            continue  # already existed — skip location insert
+            continue  # already existed — skip location insert and keyword extraction
 
         posting_id = cursor.lastrowid
         for loc in locations:
@@ -240,6 +282,19 @@ async def store_jobs_batch(
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (posting_id, loc["country"], loc["state"], loc["city"], int(loc["is_remote"])),
+            )
+
+        # Extract and count tech keywords from the new job's title + description
+        for kw in extract_keywords(j.title, desc_text):
+            await conn.execute(
+                """
+                INSERT INTO keyword_stats (keyword, use_count, last_used_at)
+                VALUES (?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(keyword) DO UPDATE SET
+                    use_count    = use_count + 1,
+                    last_used_at = CURRENT_TIMESTAMP
+                """,
+                (kw,),
             )
 
     await conn.commit()
@@ -259,6 +314,7 @@ async def query_jobs(
     state: str | list[str] | None = None,
     season: str | None = None,
     remote_only: bool = False,
+    ingested_after: str | None = None,
     limit: int = 10,
     offset: int = 0,
 ) -> list[dict]:
@@ -331,6 +387,10 @@ async def query_jobs(
     if remote_only:
         jp_conditions.append("jp.is_remote = 1")
 
+    if ingested_after:
+        jp_conditions.append("COALESCE(jp.posted_at, jp.ingested_at) > ?")
+        params.append(ingested_after)
+
     jp_conditions.append("jp.is_active = 1")
 
     if states:
@@ -360,8 +420,247 @@ async def query_jobs(
     return [dict(r) for r in rows]
 
 
+async def get_companies_for_query(
+    *,
+    keyword: str | None = None,
+    role: str | None = None,
+    discipline: str | None = None,
+    state: str | list[str] | None = None,
+    season: str | None = None,
+    remote_only: bool = False,
+    ingested_after: str | None = None,
+    limit: int = 25,
+) -> list[str]:
+    """Return distinct companies (ranked by job count) that match the given filters.
+
+    Mirrors query_jobs parameter semantics but excludes the company filter so the
+    dropdown always reflects what's available given the *other* active filters.
+    """
+
+    def _to_list(val: str | list[str] | None) -> list[str]:
+        if val is None:
+            return []
+        if isinstance(val, str):
+            return [v.strip() for v in val.split(",") if v.strip()]
+        return [v.strip() for v in val if v.strip()]
+
+    keywords = _to_list(keyword)
+    roles = _to_list(role)
+    disciplines = _to_list(discipline)
+    states = _to_list(state)
+
+    conditions: list[str] = ["jp.is_active = 1"]
+    params: list[object] = []
+
+    if keywords:
+        kw_clause = " OR ".join(
+            "(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords
+        )
+        conditions.append(f"({kw_clause})")
+        params.extend(v for kw in keywords for v in (f"%{kw}%", f"%{kw}%"))
+
+    if "all" in roles:
+        pass
+    elif roles:
+        role_parts = []
+        for r in roles:
+            if r == "intern":
+                role_parts.append("jp.is_intern = 1")
+            elif r == "new_grad":
+                role_parts.append("jp.is_new_grad = 1")
+        if role_parts:
+            conditions.append(f"({' OR '.join(role_parts)})")
+    else:
+        conditions.append("(jp.is_intern = 1 OR jp.is_new_grad = 1)")
+
+    if disciplines:
+        placeholders = ",".join("?" * len(disciplines))
+        conditions.append(f"jp.discipline IN ({placeholders})")
+        params.extend(d.lower() for d in disciplines)
+
+    if season:
+        conditions.append("jp.title LIKE ?")
+        params.append(f"%{season}%")
+
+    if remote_only:
+        conditions.append("jp.is_remote = 1")
+
+    if ingested_after:
+        conditions.append("COALESCE(jp.posted_at, jp.ingested_at) > ?")
+        params.append(ingested_after)
+
+    join = ""
+    if states:
+        placeholders = ",".join("?" * len(states))
+        conditions.append(f"jl.state IN ({placeholders})")
+        params.extend(s.upper() for s in states)
+        join = "LEFT JOIN job_locations jl ON jp.id = jl.posting_id"
+
+    where = "WHERE " + " AND ".join(conditions)
+    params.append(limit)
+
+    conn = await get_conn()
+    cursor = await conn.execute(
+        f"""
+        SELECT jp.company
+        FROM job_postings jp
+        {join}
+        {where}
+        GROUP BY LOWER(jp.company)
+        ORDER BY COUNT(*) DESC
+        LIMIT ?
+        """,  # noqa: S608
+        params,
+    )
+    rows = await cursor.fetchall()
+    return [r["company"] for r in rows]
+
+
+async def search_companies(prefix: str, limit: int = 25) -> list[str]:
+    """Return company names that start with *prefix* (case-insensitive), ranked by job count."""
+    conn = await get_conn()
+    cursor = await conn.execute(
+        """
+        SELECT company
+        FROM job_postings
+        WHERE is_active = 1 AND LOWER(company) LIKE ?
+        GROUP BY LOWER(company)
+        ORDER BY COUNT(*) DESC
+        LIMIT ?
+        """,
+        (f"{prefix.lower()}%", limit),
+    )
+    rows = await cursor.fetchall()
+    return [r["company"] for r in rows]
+
+
+async def search_keywords(prefix: str, limit: int = 25) -> list[str]:
+    """Return keywords from keyword_stats matching *prefix*, ranked by use count."""
+    conn = await get_conn()
+    cursor = await conn.execute(
+        """
+        SELECT keyword FROM keyword_stats
+        WHERE keyword LIKE ?
+        ORDER BY use_count DESC, keyword ASC
+        LIMIT ?
+        """,
+        (f"{prefix.lower()}%", limit),
+    )
+    rows = await cursor.fetchall()
+    return [r["keyword"] for r in rows]
+
+
+async def increment_keyword_stats(keywords: list[str]) -> None:
+    """Upsert keyword usage counts — called whenever keywords are used in a query or alert."""
+    if not keywords:
+        return
+    conn = await get_conn()
+    for kw in keywords:
+        await conn.execute(
+            """
+            INSERT INTO keyword_stats (keyword, use_count, last_used_at)
+            VALUES (?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(keyword) DO UPDATE SET
+                use_count    = use_count + 1,
+                last_used_at = CURRENT_TIMESTAMP
+            """,
+            (kw.lower(),),
+        )
+    await conn.commit()
+
+
+async def get_distinct_companies(limit: int = 25) -> list[str]:
+    """Return up to *limit* active company display names, ranked by job count."""
+    conn = await get_conn()
+    cursor = await conn.execute(
+        """
+        SELECT company
+        FROM job_postings
+        WHERE is_active = 1
+        GROUP BY LOWER(company)
+        ORDER BY COUNT(*) DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = await cursor.fetchall()
+    return [r["company"] for r in rows]
+
+
 # ---------------------------------------------------------------------------
-# liveness verification
+# scrape-diff liveness
+# ---------------------------------------------------------------------------
+
+_MISSING_THRESHOLD = 2  # consecutive misses before a job is marked inactive
+
+
+async def get_active_job_ids_for_company(source: str, company: str) -> set[str]:
+    """Return job_ids for all active postings from a given source + company slug."""
+    conn = await get_conn()
+    cursor = await conn.execute(
+        "SELECT job_id FROM job_postings WHERE source = ? AND company = ? AND is_active = 1",
+        (source, company),
+    )
+    return {row[0] for row in await cursor.fetchall()}
+
+
+async def reconcile_missing_jobs(
+    source: str,
+    company: str,
+    seen_ids: set[str],
+) -> int:
+    """Compare *seen_ids* (from a fresh scrape) against active DB rows for this slug.
+
+    - Jobs present in the scrape: reset missing_count to 0.
+    - Jobs absent from the scrape: increment missing_count; if >= threshold, mark inactive.
+
+    Returns the number of jobs newly marked inactive.
+    """
+    conn = await get_conn()
+
+    # Reset count for jobs that came back
+    if seen_ids:
+        placeholders = ",".join(["?"] * len(seen_ids))
+        await conn.execute(
+            f"UPDATE job_postings SET missing_count = 0"  # noqa: S608
+            f" WHERE source = ? AND company = ? AND is_active = 1"
+            f" AND job_id IN ({placeholders})",
+            (source, company, *seen_ids),
+        )
+
+    # Increment count for jobs not in the scrape
+    if seen_ids:
+        placeholders = ",".join(["?"] * len(seen_ids))
+        absent_clause = f"AND job_id NOT IN ({placeholders})"
+        absent_params: tuple = (source, company, *seen_ids)
+    else:
+        absent_clause = ""
+        absent_params = (source, company)
+
+    await conn.execute(
+        f"UPDATE job_postings SET missing_count = missing_count + 1"  # noqa: S608
+        f" WHERE source = ? AND company = ? AND is_active = 1 {absent_clause}",
+        absent_params,
+    )
+
+    # Mark inactive those that have hit the threshold
+    cursor = await conn.execute(
+        """
+        UPDATE job_postings
+        SET is_active = 0, last_checked_at = CURRENT_TIMESTAMP
+        WHERE source = ? AND company = ? AND is_active = 1
+          AND missing_count >= ?
+        RETURNING id, job_id, title
+        """,
+        (source, company, _MISSING_THRESHOLD),
+    )
+    deactivated = await cursor.fetchall()
+    await conn.commit()
+    return len(deactivated)
+
+
+# ---------------------------------------------------------------------------
+# liveness verification (URL probe — used for Simplify / Workday)
 # ---------------------------------------------------------------------------
 
 
@@ -378,11 +677,14 @@ async def get_postings_due_for_liveness_check(
     - never checked OR last_checked_at is older than recheck_interval_hours
     """
     conn = await get_conn()
+    # Only probe sources that don't use scrape-diff (Simplify + Workday).
+    # Greenhouse / Lever / Ashby are covered by reconcile_missing_jobs() instead.
     cursor = await conn.execute(
         """
         SELECT id, source, job_id, url
         FROM job_postings
         WHERE is_active = 1
+          AND source IN ('simplify-intern', 'simplify-newgrad', 'workday')
           AND ingested_at <= datetime('now', ? || ' hours')
           AND (
                 last_checked_at IS NULL

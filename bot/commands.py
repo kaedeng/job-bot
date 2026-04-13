@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 import discord
 import httpx
 from discord import app_commands
 
 from bot import alerts, db, scheduler
+from bot.company_names import search_by_slug
 from bot.filters import classify_job, is_tech_job, passes_filter
 from bot.models import Job
 from bot.scrapers import ashby, greenhouse, lever
@@ -23,23 +26,36 @@ logger = logging.getLogger(__name__)
 MAX_DISPLAY = 10  # embeds shown inline; Discord allows up to 10 per message
 
 
+_SINCE_HOURS: dict[str, int] = {
+    "24h": 24,
+    "3d": 72,
+    "7d": 168,
+    "14d": 336,
+    "30d": 720,
+}
+
+
+def _since_to_ingested_after(since_value: str) -> str:
+    hours = _SINCE_HOURS[since_value]
+    dt = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _fmt_csv(val: str) -> str:
     return ", ".join(v.strip() for v in val.split(",") if v.strip())
 
 
 def _build_filter_str(
     keyword: str | None,
-    company: str | None,
     role: str | None,
     discipline: str | None,
     state: str | None,
     season_name: str | None,
+    since_name: str | None,
 ) -> str:
     filters: list[str] = []
     if keyword:
         filters.append(f"keyword=**{_fmt_csv(keyword)}**")
-    if company:
-        filters.append(f"company=**{_fmt_csv(company)}**")
     if role:
         filters.append(f"role=**{_fmt_csv(role)}**")
     if discipline:
@@ -48,11 +64,36 @@ def _build_filter_str(
         filters.append(f"state=**{_fmt_csv(state).upper()}**")
     if season_name:
         filters.append(f"season=**{season_name}**")
+    if since_name:
+        filters.append(f"since=**{since_name}**")
     return ", ".join(filters) if filters else "no filters"
 
 
+class _CompanySelect(discord.ui.Select):
+    """Multi-select for filtering query results by company."""
+
+    def __init__(self, all_companies: list[str], selected: list[str]) -> None:
+        selected_lower = {s.lower() for s in selected}
+        options = [
+            discord.SelectOption(label=c, value=c, default=(c.lower() in selected_lower))
+            for c in all_companies
+        ]
+        super().__init__(
+            placeholder="Filter by company — leave empty to show all",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: QueryView = self.view  # type: ignore[assignment]
+        view._selected_companies = list(self.values)
+        await view._refresh(interaction, offset=0)
+
+
 class QueryView(discord.ui.View):
-    """Paginated view for /query results."""
+    """Paginated view for /query results with company multi-select."""
 
     def __init__(
         self,
@@ -60,40 +101,81 @@ class QueryView(discord.ui.View):
         offset: int,
         has_more: bool,
         filter_str: str,
+        all_companies: list[str],
+        selected_companies: list[str],
     ) -> None:
         super().__init__(timeout=180)
         self._params = query_params
         self._offset = offset
         self._filter_str = filter_str
+        self._all_companies = all_companies
+        self._selected_companies = selected_companies
+
+        if all_companies:
+            self.add_item(_CompanySelect(all_companies, selected_companies))
+
         if offset == 0:
             self.prev_page.disabled = True
         if not has_more:
             self.next_page.disabled = True
+        if not selected_companies:
+            self.clear_companies.disabled = True
 
-    async def _go_to(self, interaction: discord.Interaction, new_offset: int) -> None:
-        rows = await db.query_jobs(**self._params, offset=new_offset, limit=MAX_DISPLAY + 1)
+    def _header(self, n: int, offset: int) -> str:
+        page = offset // MAX_DISPLAY + 1
+        co = (
+            f", companies=**{', '.join(self._selected_companies)}**"
+            if self._selected_companies
+            else ""
+        )
+        return f"Page {page} — {n} result(s) for {self._filter_str}{co}:"
+
+    async def _refresh(self, interaction: discord.Interaction, offset: int) -> None:
+        rows = await db.query_jobs(
+            **self._params,
+            company=self._selected_companies or None,
+            offset=offset,
+            limit=MAX_DISPLAY + 1,
+        )
         has_more = len(rows) > MAX_DISPLAY
         rows = rows[:MAX_DISPLAY]
 
         if not rows:
             await interaction.response.edit_message(
-                content="No results on this page.", embeds=[], view=None
+                content="No results found for the selected filters.", embeds=[], view=None
             )
             return
 
         embeds = [alerts.build_db_row_embed(r) for r in rows]
-        page = new_offset // MAX_DISPLAY + 1
-        header = f"Page {page} — {len(rows)} result(s) for {self._filter_str}:"
-        new_view = QueryView(self._params, new_offset, has_more, self._filter_str)
-        await interaction.response.edit_message(content=header, embeds=embeds, view=new_view)
+        new_view = QueryView(
+            self._params, offset, has_more, self._filter_str,
+            self._all_companies, self._selected_companies,
+        )
+        await interaction.response.edit_message(
+            content=new_view._header(len(rows), offset), embeds=embeds, view=new_view
+        )
 
-    @discord.ui.button(label="← Prev", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="← Prev", style=discord.ButtonStyle.secondary, row=1)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._go_to(interaction, max(0, self._offset - MAX_DISPLAY))
+        await self._refresh(interaction, max(0, self._offset - MAX_DISPLAY))
 
-    @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Next →", style=discord.ButtonStyle.secondary, row=1)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._go_to(interaction, self._offset + MAX_DISPLAY)
+        await self._refresh(interaction, self._offset + MAX_DISPLAY)
+
+    @discord.ui.button(label="Select All", style=discord.ButtonStyle.primary, row=1)
+    async def select_all_companies(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._selected_companies = list(self._all_companies)
+        await self._refresh(interaction, 0)
+
+    @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, row=1)
+    async def clear_companies(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self._selected_companies = []
+        await self._refresh(interaction, 0)
 
 
 def _build_scout_embed(job: Job) -> discord.Embed:
@@ -116,17 +198,62 @@ def _build_scout_embed(job: Job) -> discord.Embed:
     return embed
 
 
+async def _keyword_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    parts = [p.strip() for p in current.split(",")]
+    prefix = parts[-1].lower()
+    already = ", ".join(p for p in parts[:-1] if p)
+
+    keywords = await db.search_keywords(prefix)
+    choices = []
+    for k in keywords[:25]:
+        value = f"{already}, {k}" if already else k
+        value = value[:100]
+        choices.append(app_commands.Choice(name=value, value=value))
+    return choices
+
+
+async def _company_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    # Autocomplete only the last comma-separated token; carry the rest forward
+    parts = [p.strip() for p in current.split(",")]
+    prefix = parts[-1]
+    already = ", ".join(p for p in parts[:-1] if p)
+
+    # Merge DB results (by display name) with slug-based matches, deduplicated
+    db_results = await db.search_companies(prefix)
+    slug_results = search_by_slug(prefix)
+    seen: set[str] = set()
+    merged: list[str] = []
+    for c in db_results + slug_results:
+        if c.lower() not in seen:
+            seen.add(c.lower())
+            merged.append(c)
+
+    choices = []
+    for c in merged[:25]:
+        value = f"{already}, {c}" if already else c
+        value = value[:100]  # Discord Choice limit
+        choices.append(app_commands.Choice(name=value, value=value))
+    return choices
+
+
 def register(tree: app_commands.CommandTree) -> None:
     """Register all slash commands onto the given CommandTree."""
 
     @tree.command(name="query", description="Search the jobs database")
     @app_commands.describe(
         keyword="Title or description keyword(s), comma-separated for OR (e.g. 'Python,React')",
-        company="Company name(s), comma-separated for OR (e.g. 'Stripe,Ramp')",
+        company="Company name — start typing to search (autocomplete)",
         role="Role type(s): intern, new_grad, all — comma-separated for OR",
         discipline="Discipline(s): swe, ee — comma-separated for OR (e.g. 'swe,ee')",
         state="US state(s), comma-separated for OR (e.g. 'CO,WA')",
         season="Start season: summer, fall, spring, winter",
+        since="Only show jobs posted/ingested within this window",
     )
     @app_commands.choices(
         season=[
@@ -135,7 +262,15 @@ def register(tree: app_commands.CommandTree) -> None:
             app_commands.Choice(name="Spring", value="spring"),
             app_commands.Choice(name="Winter", value="winter"),
         ],
+        since=[
+            app_commands.Choice(name="Last 24 hours", value="24h"),
+            app_commands.Choice(name="Last 3 days", value="3d"),
+            app_commands.Choice(name="Last 7 days", value="7d"),
+            app_commands.Choice(name="Last 14 days", value="14d"),
+            app_commands.Choice(name="Last 30 days", value="30d"),
+        ],
     )
+    @app_commands.autocomplete(keyword=_keyword_autocomplete, company=_company_autocomplete)
     async def query(
         interaction: discord.Interaction,
         keyword: str | None = None,
@@ -144,20 +279,34 @@ def register(tree: app_commands.CommandTree) -> None:
         discipline: str | None = None,
         state: str | None = None,
         season: app_commands.Choice[str] | None = None,
+        since: app_commands.Choice[str] | None = None,
     ) -> None:
         await interaction.response.defer()
 
         season_value = season.value if season else None
+        ingested_after = _since_to_ingested_after(since.value) if since else None
+        initial_companies = [c.strip() for c in company.split(",") if c.strip()] if company else []
+
+        # company filter lives in view state; pass it separately to db.query_jobs
         query_params = dict(
             keyword=keyword,
-            company=company,
             role=role,
             discipline=discipline,
             state=state,
             season=season_value,
+            ingested_after=ingested_after,
         )
 
-        rows = await db.query_jobs(**query_params, limit=MAX_DISPLAY + 1)
+        parsed_keywords = (
+            [k.strip().lower() for k in keyword.split(",") if k.strip()] if keyword else []
+        )
+
+        all_companies, rows, _ = await asyncio.gather(
+            db.get_companies_for_query(**query_params),
+            db.query_jobs(**query_params, company=initial_companies or None, limit=MAX_DISPLAY + 1),
+            db.increment_keyword_stats(parsed_keywords),
+        )
+
         has_more = len(rows) > MAX_DISPLAY
         rows = rows[:MAX_DISPLAY]
 
@@ -167,13 +316,21 @@ def register(tree: app_commands.CommandTree) -> None:
 
         embeds = [alerts.build_db_row_embed(r) for r in rows]
         season_name = season.name if season else None
-        filter_str = _build_filter_str(keyword, company, role, discipline, state, season_name)
+        since_name = since.name if since else None
+        filter_str = _build_filter_str(keyword, role, discipline, state, season_name, since_name)
         header = f"Showing {len(rows)} result(s) for {filter_str}:"
 
-        view = QueryView(query_params, offset=0, has_more=has_more, filter_str=filter_str)
+        view = QueryView(
+            query_params,
+            offset=0,
+            has_more=has_more,
+            filter_str=filter_str,
+            all_companies=all_companies,
+            selected_companies=initial_companies,
+        )
         await interaction.followup.send(content=header, embeds=embeds, view=view)
         logger.info(
-            "Query from %s: keyword=%r company=%r role=%r discipline=%r state=%r season=%r → %d results (has_more=%s)",  # noqa: E501
+            "Query from %s: keyword=%r company=%r role=%r discipline=%r state=%r season=%r since=%r → %d results (has_more=%s)",  # noqa: E501
             interaction.user,
             keyword,
             company,
@@ -181,6 +338,7 @@ def register(tree: app_commands.CommandTree) -> None:
             discipline,
             state,
             season_value,
+            since.value if since else None,
             len(rows),
             has_more,
         )
@@ -254,19 +412,57 @@ def register(tree: app_commands.CommandTree) -> None:
         name="alert",
         description="Set up personalised job alert DMs — only you can see this",
     )
-    async def alert(interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            "Check your DMs — I've sent you the setup wizard!", ephemeral=True
-        )
+    @app_commands.describe(
+        keyword="Keyword(s) to filter by — start typing to search, comma-separate for multiple",
+        company="Company name(s) to watch — start typing to search, comma-separate for multiple",
+    )
+    @app_commands.autocomplete(keyword=_keyword_autocomplete, company=_company_autocomplete)
+    async def alert(
+        interaction: discord.Interaction,
+        keyword: str | None = None,
+        company: str | None = None,
+    ) -> None:
+        user_id = str(interaction.user.id)
+        companies = [c.strip() for c in company.split(",") if c.strip()] if company else []
+        keywords = [k.strip().lower() for k in keyword.split(",") if k.strip()] if keyword else []
+
+        # Fetch existing prefs to show the user what they currently have
+        prefs = await db.get_user_prefs(user_id)
+        existing_keywords = prefs.get("keywords") or [] if prefs else []
+        existing_companies = prefs.get("companies") or [] if prefs else []
+
+        lines = ["Check your DMs — I've sent you the setup wizard!"]
+        if existing_keywords or existing_companies:
+            lines.append("")
+            lines.append("**Your current filters:**")
+            if existing_keywords:
+                lines.append(f"Keywords: {', '.join(existing_keywords)}")
+            if existing_companies:
+                lines.append(f"Companies: {', '.join(existing_companies)}")
+            lines.append("*(these will be pre-filled in the wizard)*")
+
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+        # Pre-populate wizard with slash command values; fall back to existing prefs
+        init_keywords = keywords or existing_keywords or None
+        init_companies = companies or existing_companies or None
+
         try:
-            await alerts.start_alert_setup(interaction.user)
+            await alerts.start_alert_setup(
+                interaction.user,
+                companies=init_companies,
+                keywords=init_keywords,
+            )
         except discord.Forbidden:
             await interaction.followup.send(
                 "I couldn't DM you. Make sure **Allow direct messages from server members** "
                 "is enabled in your Discord Privacy & Safety settings, then try again.",
                 ephemeral=True,
             )
-        logger.info("Alert setup started for user %s", interaction.user)
+        logger.info(
+            "Alert setup started for user %s (companies=%r keywords=%r)",
+            interaction.user, init_companies, init_keywords,
+        )
 
     @tree.command(
         name="alert-status",
@@ -289,8 +485,11 @@ def register(tree: app_commands.CommandTree) -> None:
         interval_str = alerts.interval_display(prefs["alert_interval_minutes"])
 
         disciplines = prefs.get("disciplines") or []
+        disc_label = {"swe": "SWE", "ee": "EE", "unknown": "Unknown"}
         disc_str = (
-            "SWE + EE (all)" if not disciplines else " + ".join(d.upper() for d in disciplines)
+            "SWE + EE + Unknown (all)"
+            if not disciplines
+            else " + ".join(disc_label.get(d, d.upper()) for d in disciplines)
         )
 
         rule_lines = []
@@ -447,3 +646,4 @@ def register(tree: app_commands.CommandTree) -> None:
         embed.description = "\n".join(lines)
         embed.set_footer(text=f"Alert threshold: {threshold} consecutive failures")
         await interaction.response.send_message(embed=embed)
+

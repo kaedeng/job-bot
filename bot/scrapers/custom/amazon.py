@@ -129,7 +129,7 @@ async def scrape(client: httpx.AsyncClient) -> list[Job]:
                         Job(
                             id=job_id,
                             title=item.get("title", ""),
-                            company="amazon",
+                            company="Amazon",
                             location=location,
                             url=url,
                             source="amazon",

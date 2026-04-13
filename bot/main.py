@@ -1,20 +1,34 @@
 from __future__ import annotations
 
-import asyncio
+import argparse
 import logging
+import os
 
-import discord
-from discord import app_commands
+# Parse args and set ENV_FILE *before* any bot imports so config.py
+# reads the correct env file when it initializes at import time.
+_parser = argparse.ArgumentParser(description="Job scraper Discord bot")
+_parser.add_argument(
+    "--env",
+    default=".env",
+    metavar="FILE",
+    help="Path to env file (default: .env)",
+)
+_args = _parser.parse_args()
+os.environ.setdefault("ENV_FILE", _args.env)
 
-from bot import commands
-from bot.config import settings
-from bot.db import init_db
-from bot.scheduler import (
+import asyncio  # noqa: E402
+
+import discord  # noqa: E402
+from discord import app_commands  # noqa: E402
+
+from bot import commands  # noqa: E402
+from bot.config import settings  # noqa: E402
+from bot.db import init_db  # noqa: E402
+from bot.scheduler import (  # noqa: E402
     poll_ashby,
     poll_greenhouse,
     poll_lever,
     poll_simplify,
-    poll_workday,
     poll_user_alerts,
     poll_workday,
     run_custom_scrapers,
