@@ -49,7 +49,7 @@ DISCIPLINE_INCLUDE = re.compile(
     r"|machine\s*learning|platform|infrastructure"
     r"|backend|frontend|full[\s-]?stack|devops|security|cloud"
     r"|electrical|hardware|embedded|firmware|fpga|asic|vlsi|pcb"
-    r"|rf|analog|circuit|semiconductor|silicon|photonics)\b",
+    r"|rf|analog|circuit|semiconductor|silicon|photonics|scientist)\b",
     re.IGNORECASE,
 )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -287,28 +288,26 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     interval = settings.poll_interval_minutes
 
+    # on_ready already ran all scrapers once at startup. Schedule first recurring
+    # runs at now+interval so the scheduler doesn't immediately double-fire.
+    def _deferred(minutes: int = interval) -> datetime:
+        return datetime.now(timezone.utc) + timedelta(minutes=minutes)
+
     # Stagger scrapers to avoid burst traffic
-    scheduler.add_job(poll_greenhouse, "interval", minutes=interval, id="greenhouse")
-    scheduler.add_job(
-        poll_lever,
-        "interval",
-        minutes=interval,
-        id="lever",
-        next_run_time=None,  # delay first run
-    )
-    scheduler.add_job(
-        poll_ashby,
-        "interval",
-        minutes=interval,
-        id="ashby",
-        next_run_time=None,
-    )
-    scheduler.add_job(poll_workday, "interval", minutes=interval, id="workday")
+    scheduler.add_job(poll_greenhouse, "interval", minutes=interval, id="greenhouse",
+                      next_run_time=_deferred())
+    scheduler.add_job(poll_lever, "interval", minutes=interval, id="lever",
+                      next_run_time=_deferred())
+    scheduler.add_job(poll_ashby, "interval", minutes=interval, id="ashby",
+                      next_run_time=_deferred())
+    scheduler.add_job(poll_workday, "interval", minutes=interval, id="workday",
+                      next_run_time=_deferred())
     scheduler.add_job(
         poll_simplify,
         "interval",
         minutes=settings.simplify_poll_interval_minutes,
         id="simplify",
+        next_run_time=_deferred(settings.simplify_poll_interval_minutes),
     )
 
     # Custom scrapers — driven by CUSTOM_SCRAPERS env var + registry
@@ -324,7 +323,7 @@ def start_scheduler() -> AsyncIOScheduler:
             args=[name],
             minutes=interval_mins,
             id=name,
-            next_run_time=None,  # stagger: first run happens in on_ready
+            next_run_time=_deferred(interval_mins),
         )
 
     # User DM alerts — checked every 2 min; actual delivery respects per-user intervals
@@ -333,7 +332,8 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(_maybe_alert_health, "interval", minutes=60, id="health")
     # URL liveness probe — catches dead Simplify/Workday links (not slug-based scrapers,
     # which use scrape-diff instead). Runs every 6 hours, deferred first run.
-    scheduler.add_job(poll_liveness, "interval", hours=6, id="liveness", next_run_time=None)
+    scheduler.add_job(poll_liveness, "interval", hours=6, id="liveness",
+                      next_run_time=_deferred(60 * 6))
 
     scheduler.start()
     logger.info("Scheduler started — polling every %d min", interval)

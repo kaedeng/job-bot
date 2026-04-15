@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://www.amazon.jobs"
 SEARCH_URL = f"{BASE_URL}/en/search.json"
 
-CATEGORIES = ["software-development", "hardware-engineering"]
+CATEGORIES = [
+    "software-development",
+    "hardware-engineering",
+    "machine-learning-science",
+    "research-science",
+    "student-programs",
+]
 QUERIES = ["intern", "new grad"]
 
 RESULT_LIMIT = 100
