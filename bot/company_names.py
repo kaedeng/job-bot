@@ -19,11 +19,23 @@ _DISPLAY_NAMES: dict[str, str] = {
     "cockroachlabs": "Cockroach Labs",
     "grafanalabs": "Grafana Labs",
     "hubspot": "HubSpot",
+    "spacex": "SpaceX",
+    "janestreet": "Jane Street",
+    "gitlab": "GitLab",
+    "hrttalentcommunity": "Hudson River Trading",
+    "coupang": "Coupang",
     # --- Ashby ---
     "openai": "OpenAI",
     "1password": "1Password",
+    # --- Lever ---
+    "spotify": "Spotify",
+    "palantir": "Palantir",
+    "blueorigin": "Blue Origin",
     # --- Workday (org / subdomain prefix) ---
     "nvidia": "NVIDIA",
+    "capitalone": "Capital One",
+    "micron": "Micron",
+    "bpinternational": "BP",
     "globalhr": "Raytheon",
     "ngc": "Northrop Grumman",
     "tmobile": "T-Mobile",

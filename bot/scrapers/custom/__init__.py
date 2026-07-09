@@ -21,12 +21,42 @@ class CustomScraperInfo:
 def _build_registry() -> dict[str, CustomScraperInfo]:
     """Build the registry, importing scraper modules lazily to keep the
     top-level import lightweight and avoid circular-import issues."""
-    from bot.scrapers.custom import amazon
+    from bot.scrapers.custom import amazon, databricks, google, meta, microsoft, netflix
 
     return {
         "amazon": CustomScraperInfo(
             name="amazon",
             scrape=amazon.scrape,
+            default_interval_minutes=30,
+            timeout=30,
+        ),
+        "databricks": CustomScraperInfo(
+            name="databricks",
+            scrape=databricks.scrape,
+            default_interval_minutes=30,
+            timeout=30,
+        ),
+        "google": CustomScraperInfo(
+            name="google",
+            scrape=google.scrape,
+            default_interval_minutes=30,
+            timeout=30,
+        ),
+        "meta": CustomScraperInfo(
+            name="meta",
+            scrape=meta.scrape,
+            default_interval_minutes=30,
+            timeout=30,
+        ),
+        "microsoft": CustomScraperInfo(
+            name="microsoft",
+            scrape=microsoft.scrape,
+            default_interval_minutes=30,
+            timeout=30,
+        ),
+        "netflix": CustomScraperInfo(
+            name="netflix",
+            scrape=netflix.scrape,
             default_interval_minutes=30,
             timeout=30,
         ),

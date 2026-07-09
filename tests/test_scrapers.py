@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from bot.scrapers import CustomScraper, PlatformScraper, ashby, greenhouse, lever, simplify
-from bot.scrapers.custom import amazon
+from bot.scrapers.custom import amazon, databricks, google, meta, microsoft, netflix
 
 
 @pytest.fixture
@@ -16,9 +16,12 @@ def mock_transport():
             self.responses: list[httpx.Response] = []
 
         def add(self, json_data: object, status_code: int = 200) -> None:
+            response_kwargs = (
+                {"text": json_data} if isinstance(json_data, str) else {"json": json_data}
+            )
             self.responses.append(
                 httpx.Response(
-                    status_code, json=json_data, request=httpx.Request("GET", "https://x")
+                    status_code, **response_kwargs, request=httpx.Request("GET", "https://x")
                 )
             )
 
@@ -313,9 +316,12 @@ class TestScraperContracts:
             )
 
     def test_custom_scraper_has_correct_signature(self):
-        sig = inspect.signature(amazon.scrape)
-        params = list(sig.parameters)
-        assert params == ["client"], f"amazon.scrape signature should be (client,), got {params}"
+        for mod in (amazon, databricks, google, meta, microsoft, netflix):
+            sig = inspect.signature(mod.scrape)
+            params = list(sig.parameters)
+            assert params == ["client"], (
+                f"{mod.__name__}.scrape signature should be (client,), got {params}"
+            )
 
     def test_protocol_types_are_importable(self):
         # Ensures the public API of bot.scrapers is stable
@@ -494,3 +500,230 @@ class TestAmazon:
         jobs = await amazon.scrape(mock_transport.build_client())
         assert len(jobs) == 1
         assert jobs[0].id == "real"
+
+
+def _ms_bootstrap() -> str:
+    return '<html><head><meta name="_csrf" content="csrf-token"></head></html>'
+
+
+def _ms_position(
+    id: str = "1970393556000000",
+    display_job_id: str = "200000001",
+    title: str = "Software Engineering Intern",
+    locations: list[str] | None = None,
+    posted_ts: int = 1712448000,
+) -> dict:
+    return {
+        "id": id,
+        "displayJobId": display_job_id,
+        "atsJobId": display_job_id,
+        "name": title,
+        "standardizedLocations": locations or ["Redmond, WA, US"],
+        "postedTs": posted_ts,
+        "positionUrl": f"/careers/job/{id}",
+    }
+
+
+def _ms_search(positions: list[dict], total: int | None = None) -> dict:
+    return {"data": {"positions": positions, "count": len(positions) if total is None else total}}
+
+
+def _ms_detail(
+    description: str = "<p>Internship for students building software in Python.</p>",
+    public_url: str = "https://apply.careers.microsoft.com/careers/job/1970393556000000",
+) -> dict:
+    return {
+        "data": {
+            "jobDescription": description,
+            "publicUrl": public_url,
+        }
+    }
+
+
+_MS_EMPTY_PADDING = len(microsoft.SEARCH_SPECS) - 1
+
+
+class TestMicrosoft:
+    async def test_parses_job_fields(self, mock_transport):
+        mock_transport.add(_ms_bootstrap())
+        mock_transport.add(_ms_search([_ms_position()]))
+        mock_transport.add(_ms_detail())
+        for _ in range(_MS_EMPTY_PADDING):
+            mock_transport.add(_ms_search([]))
+
+        jobs = await microsoft.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        j = jobs[0]
+        assert j.id == "200000001"
+        assert j.title == "Software Engineering Intern"
+        assert j.company == "Microsoft"
+        assert j.source == "microsoft"
+        assert j.location == "Redmond, WA, US"
+        assert j.url == "https://apply.careers.microsoft.com/careers/job/1970393556000000"
+        assert j.posted_at is not None
+        assert j.posted_at.year == 2024
+        assert "Internship for students" in (j.description or "")
+
+    async def test_deduplicates_same_id_across_searches(self, mock_transport):
+        hit = _ms_position(display_job_id="dup")
+        mock_transport.add(_ms_bootstrap())
+        mock_transport.add(_ms_search([hit]))
+        mock_transport.add(_ms_detail())
+        mock_transport.add(_ms_search([hit]))
+        for _ in range(_MS_EMPTY_PADDING - 1):
+            mock_transport.add(_ms_search([]))
+
+        jobs = await microsoft.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "dup"
+
+    async def test_detail_failure_uses_search_fields(self, mock_transport):
+        mock_transport.add(_ms_bootstrap())
+        mock_transport.add(_ms_search([_ms_position(id="abc", display_job_id="job-1")]))
+        mock_transport.add({}, status_code=500)
+        for _ in range(_MS_EMPTY_PADDING):
+            mock_transport.add(_ms_search([]))
+
+        jobs = await microsoft.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "job-1"
+        assert jobs[0].url == "https://apply.careers.microsoft.com/careers/job/abc"
+        assert jobs[0].description is None
+
+
+def _google_html() -> str:
+    return """
+    <html>
+      <body>
+        <h3 class="QJPWVe">Software Engineering Intern, PhD, Summer 2027</h3>
+        <div>
+          <span class="r0wTof">Mountain View, CA, USA</span>
+          <span class="r0wTof">+1 more</span>
+          <div class="Xsxa1e">
+            <p>Currently pursuing a degree in Computer Science.</p>
+          </div>
+          <a href="jobs/results/123456789-software-engineering-intern">Apply</a>
+        </div>
+      </body>
+    </html>
+    """
+
+
+class TestGoogle:
+    async def test_parses_job_cards(self, mock_transport):
+        mock_transport.add(_google_html())
+        for _ in range(len(google.QUERIES) - 1):
+            mock_transport.add("<html></html>")
+
+        jobs = await google.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        j = jobs[0]
+        assert j.id == "123456789"
+        assert j.title == "Software Engineering Intern, PhD, Summer 2027"
+        assert j.company == "Google"
+        assert j.source == "google"
+        assert j.location == "Mountain View, CA, USA"
+        assert j.url.endswith("/jobs/results/123456789-software-engineering-intern")
+        assert "Computer Science" in (j.description or "")
+
+    async def test_deduplicates_across_queries(self, mock_transport):
+        mock_transport.add(_google_html())
+        mock_transport.add(_google_html())
+        for _ in range(len(google.QUERIES) - 2):
+            mock_transport.add("<html></html>")
+
+        jobs = await google.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "123456789"
+
+
+def _meta_html() -> str:
+    return """
+    <html>
+      <body>
+        <a aria-label="Software Engineer Intern, Product" href="/jobs/987654321/">
+          Software Engineer Intern, Product
+        </a>
+      </body>
+    </html>
+    """
+
+
+class TestMeta:
+    async def test_parses_public_job_links_when_available(self, mock_transport):
+        mock_transport.add(_meta_html())
+        for _ in range(len(meta.QUERIES) - 1):
+            mock_transport.add("<html></html>")
+
+        jobs = await meta.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        j = jobs[0]
+        assert j.id == "987654321"
+        assert j.title == "Software Engineer Intern, Product"
+        assert j.company == "Meta"
+        assert j.source == "meta"
+        assert j.url == "https://www.metacareers.com/jobs/987654321/"
+
+    async def test_empty_shell_returns_no_jobs(self, mock_transport):
+        for _ in meta.QUERIES:
+            mock_transport.add("<html><body>MDCBlockedViewRoot.react</body></html>")
+
+        jobs = await meta.scrape(mock_transport.build_client())
+
+        assert jobs == []
+
+
+class TestNetflix:
+    async def test_wraps_lever_scraper(self, mock_transport):
+        mock_transport.add(
+            [
+                {
+                    "id": "netflix-1",
+                    "text": "Software Engineer Intern",
+                    "categories": {"location": "Los Gatos, CA"},
+                    "hostedUrl": "https://jobs.lever.co/netflix/netflix-1",
+                    "descriptionPlain": "Build streaming systems.",
+                }
+            ]
+        )
+
+        jobs = await netflix.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "netflix-1"
+        assert jobs[0].company == "Netflix"
+        assert jobs[0].source == "netflix"
+        assert jobs[0].location == "Los Gatos, CA"
+        assert "streaming" in (jobs[0].description or "")
+
+
+class TestDatabricks:
+    async def test_wraps_greenhouse_scraper(self, mock_transport):
+        mock_transport.add(
+            {
+                "jobs": [
+                    {
+                        "id": 42,
+                        "title": "Software Engineer Intern",
+                        "location": {"name": "San Francisco, CA"},
+                        "absolute_url": "https://boards.greenhouse.io/databricks/jobs/42",
+                        "content": "Work on data systems.",
+                    }
+                ]
+            }
+        )
+
+        jobs = await databricks.scrape(mock_transport.build_client())
+
+        assert len(jobs) == 1
+        assert jobs[0].id == "42"
+        assert jobs[0].company == "Databricks"
+        assert jobs[0].source == "databricks"
+        assert jobs[0].location == "San Francisco, CA"
+        assert "data systems" in (jobs[0].description or "")

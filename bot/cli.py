@@ -18,7 +18,7 @@ from bot.filters import (
 )
 from bot.models import Job
 from bot.scrapers import ashby, greenhouse, lever, simplify
-from bot.scrapers.custom import amazon
+from bot.scrapers.custom import amazon, databricks, google, meta, microsoft, netflix
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +39,16 @@ async def run_scraper(source: str, slug: str | None) -> list[Job]:
             return await simplify.scrape(client)
         elif source == "amazon":
             return await amazon.scrape(client)
+        elif source == "databricks":
+            return await databricks.scrape(client)
+        elif source == "google":
+            return await google.scrape(client)
+        elif source == "meta":
+            return await meta.scrape(client)
+        elif source == "microsoft":
+            return await microsoft.scrape(client)
+        elif source == "netflix":
+            return await netflix.scrape(client)
         else:
             logger.error("Unknown source %s (slug=%s)", source, slug)
             return []
@@ -80,7 +90,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Dry-run job scrapers locally")
     parser.add_argument(
         "source",
-        choices=["greenhouse", "lever", "ashby", "simplify", "amazon"],
+        choices=[
+            "greenhouse",
+            "lever",
+            "ashby",
+            "simplify",
+            "amazon",
+            "databricks",
+            "google",
+            "meta",
+            "microsoft",
+            "netflix",
+        ],
         help="Scraper source to test",
     )
     parser.add_argument(
@@ -102,7 +123,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.source not in {"simplify", "amazon"} and not args.slug:
+    custom_sources = {"simplify", "amazon", "databricks", "google", "meta", "microsoft", "netflix"}
+    if args.source not in custom_sources and not args.slug:
         parser.error(f"{args.source} requires a company slug")
 
     asyncio.run(dry_run(args.source, args.slug, args.show_all, args.store))
