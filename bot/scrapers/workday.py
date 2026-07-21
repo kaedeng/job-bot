@@ -192,7 +192,7 @@ async def scrape(
 
         await asyncio.sleep(1)  # be polite between pages
 
-    # Fetch descriptions only for new tech-relevant jobs to limit extra requests.
+    # Fetch descriptions only for new engineering-relevant jobs to limit extra requests.
     # Already-seen jobs already have descriptions in the DB — skip them.
     tech_jobs = [j for j in jobs if is_tech_job(j)]
     if seen_ids is not None:

@@ -15,6 +15,7 @@ _COMMA_SEP_FIELDS = frozenset(
         "ashby_slugs",
         "workday_slugs",
         "custom_scrapers",
+        "target_companies",
     }
 )
 
@@ -56,6 +57,7 @@ class Settings(BaseSettings):
     lever_slugs: list[str] = []
     ashby_slugs: list[str] = []
     workday_slugs: list[str] = []  # format: 'host:board', e.g. 'bloomberg.wd1:BloombergCareerSite'
+    target_companies: list[str] = []  # display names to include in non-slug sources like Simplify
 
     poll_interval_minutes: int = 10
     simplify_poll_interval_minutes: int = 30

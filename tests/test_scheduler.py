@@ -57,6 +57,22 @@ class TestHealthAPI:
         assert scheduler.get_health_status()["greenhouse"] == 0
 
 
+class TestSimplifyCompanyFilter:
+    def test_includes_workday_display_names(self, monkeypatch):
+        monkeypatch.setattr(scheduler.settings, "greenhouse_slugs", [])
+        monkeypatch.setattr(scheduler.settings, "lever_slugs", [])
+        monkeypatch.setattr(scheduler.settings, "ashby_slugs", [])
+        monkeypatch.setattr(scheduler.settings, "workday_slugs", ["dupont.wd5:Jobs"])
+        monkeypatch.setattr(scheduler.settings, "custom_scrapers", [])
+        monkeypatch.setattr(scheduler.settings, "target_companies", ["Burns & McDonnell"])
+
+        companies = scheduler._simplify_company_filter()
+
+        assert companies is not None
+        assert "dupont" in companies
+        assert "burns & mcdonnell" in companies
+
+
 # ---------------------------------------------------------------------------
 # _check_url_live
 # ---------------------------------------------------------------------------

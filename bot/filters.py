@@ -42,14 +42,19 @@ _YOE_RE = re.compile(
 _TITLE_SCORE = 3
 _DESC_SCORE = 1
 
-# Broad tech discipline check — storage gate (is_tech_job).
-# Covers both SWE and EE so both get stored in job_postings.
+# Broad engineering discipline check -- storage gate (is_tech_job).
+# Covers SWE, EE, and chemical/process engineering so all relevant roles get stored.
 DISCIPLINE_INCLUDE = re.compile(
     r"\b(software|swe|engineer(ing)?|developer|dev|data|ml"
     r"|machine\s*learning|platform|infrastructure"
     r"|backend|frontend|full[\s-]?stack|devops|security|cloud"
     r"|electrical|hardware|embedded|firmware|fpga|asic|vlsi|pcb"
-    r"|rf|analog|circuit|semiconductor|silicon|photonics|scientist)\b",
+    r"|rf|analog|circuit|semiconductor|silicon|photonics|scientist"
+    r"|chemical|chemistry|chemist"
+    r"|process\s+(?:engineer(?:ing)?|development|design|control|controls|safety"
+    r"|optimization|simulation|modeling|technology)"
+    r"|production\s+engineer(?:ing)?|manufacturing\s+(?:engineer(?:ing)?|technology)"
+    r"|plant\s+engineer(?:ing)?|refinery|petrochemical|polymer|catalyst)\b",
     re.IGNORECASE,
 )
 
@@ -64,6 +69,16 @@ _SWE_DISCIPLINE = re.compile(
 _EE_DISCIPLINE = re.compile(
     r"\b(electrical|hardware|embedded|firmware|fpga|asic|vlsi|pcb"
     r"|rf|analog|circuit|semiconductor|silicon|photonics|ee\b)\b",
+    re.IGNORECASE,
+)
+
+_CHEM_DISCIPLINE = re.compile(
+    r"\b(chemical|chemistry|chemist|process\s+(?:engineer(?:ing)?|development"
+    r"|design|control|controls|safety|optimization|simulation|modeling|technology)"
+    r"|production\s+engineer(?:ing)?|manufacturing\s+(?:engineer(?:ing)?|technology)"
+    r"|plant\s+engineer(?:ing)?|refinery|petrochemical|polymer|catalyst"
+    r"|reaction\s+engineering|separations?|distillation|mass\s+transfer"
+    r"|heat\s+transfer|fluid\s+dynamics|thermodynamics)\b",
     re.IGNORECASE,
 )
 
@@ -498,10 +513,10 @@ def _is_us_location(location: str) -> bool:
 
 
 def is_tech_job(job: Job) -> bool:
-    """Return True if the job title contains any tech discipline keyword (SWE or EE).
+    """Return True if the job title contains any target engineering keyword.
 
-    Used as a lightweight pre-filter before storing to job_postings — rejects
-    clearly non-tech roles (e.g. "Chef", "HR Manager") that happen to appear on
+    Used as a lightweight pre-filter before storing to job_postings -- rejects
+    clearly unrelated roles (e.g. "Chef", "HR Manager") that happen to appear on
     a curated company's board.
     """
     return bool(DISCIPLINE_INCLUDE.search(job.title))
@@ -511,19 +526,22 @@ def classify_discipline(job: Job) -> str:
     """Classify a job's engineering discipline from its title.
 
     A job can match multiple disciplines. Returns a comma-separated string of
-    matched disciplines, or "unknown" if neither signal is present.
+    matched disciplines, or "unknown" if no signal is present.
 
     Returns:
-        "swe"     — only software engineering signals
-        "ee"      — only electrical/hardware engineering signals
-        "swe,ee"  — both signals present (e.g. "Embedded Software Engineer")
-        "unknown" — title has neither clear SWE nor EE signal
+        "swe"      -- software engineering signals
+        "ee"       -- electrical/hardware engineering signals
+        "chem"     -- chemical/process engineering signals
+        "swe,ee"   -- multiple signals present (e.g. "Embedded Software Engineer")
+        "unknown"  -- title has no clear target-discipline signal
     """
     disciplines = []
     if _SWE_DISCIPLINE.search(job.title):
         disciplines.append("swe")
     if _EE_DISCIPLINE.search(job.title):
         disciplines.append("ee")
+    if _CHEM_DISCIPLINE.search(job.title):
+        disciplines.append("chem")
     return ",".join(disciplines) if disciplines else "unknown"
 
 
@@ -755,7 +773,7 @@ def classify_job(job: Job) -> tuple[bool, bool]:
 
 
 def passes_filter(job: Job) -> bool:
-    """Return True if the job is an entry-level/intern SWE role in the US."""
+    """Return True if the job is an entry-level/intern target-engineering role in the US."""
     if TITLE_EXCLUDE.search(job.title):
         return False
 
@@ -763,8 +781,9 @@ def passes_filter(job: Job) -> bool:
     if not (is_intern or is_new_grad):
         return False
 
-    # Entry-level roles must be CS-discipline when classification came from title alone
-    # (guards against "Marketing Intern" slipping through on description signals)
+    # Entry-level roles must be in a target engineering discipline when classification
+    # came from title alone (guards against "Marketing Intern" slipping through on
+    # description signals).
     if not DISCIPLINE_INCLUDE.search(job.title):
         return False
 

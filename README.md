@@ -1,8 +1,8 @@
 # discord-job-bot
 
-A Discord bot that polls job boards for entry-level and intern software engineering roles in the US, and posts them to a channel.
+A Discord bot that polls job boards for entry-level and intern engineering roles in the US, and posts them to a channel.
 
-Supported sources: Greenhouse, Lever, Ashby, and Simplify (GitHub-based community lists).
+Supported sources: Greenhouse, Lever, Ashby, Workday, Simplify (GitHub-based community lists), and selected custom career APIs.
 
 ## Prerequisites
 
@@ -90,13 +90,13 @@ On first run, the bot will:
 ### Pipeline
 
 ```
-Scrapers → CS filter → Dedup → Store → Classify → Entry-level filter → Notify
+Scrapers → Engineering filter → Dedup → Store → Classify → Entry-level filter → Notify
 ```
 
 1. **Scrapers** fetch job listings from each platform's API (with description text where available)
-2. **CS filter** drops clearly non-CS roles (e.g. Chef, HR) using a discipline keyword check
+2. **Engineering filter** drops clearly unrelated roles (e.g. Chef, HR) using a discipline keyword check
 3. **Dedup** checks `job_postings` to skip already-seen jobs
-4. **Store** persists all new CS jobs to `job_postings` with parsed location and classification flags
+4. **Store** persists all new engineering-relevant jobs to `job_postings` with parsed location and classification flags
 5. **Classify** runs `classify_job()` to set `is_intern` / `is_new_grad` per job
 6. **Entry-level filter** keeps only jobs that are intern or new-grad AND in the US
 7. **Notifier** sends matching jobs to the Discord channel as embedded messages
@@ -105,9 +105,9 @@ Scrapers → CS filter → Dedup → Store → Classify → Entry-level filter �
 
 Two-stage filter:
 
-**Stage 1 — Tech relevance** (storage gate, `is_tech_job`):
+**Stage 1 — Engineering relevance** (storage gate, `is_tech_job`):
 
-- Title must contain a software or electrical engineering keyword (`software`, `engineer`, `developer`, `data`, `ml`, `backend`, `frontend`, `electrical`, `hardware`, `embedded`, `fpga`, etc.)
+- Title must contain a software, electrical, or chemical/process engineering keyword (`software`, `engineer`, `developer`, `data`, `ml`, `electrical`, `hardware`, `chemical`, `process`, `refinery`, etc.)
 - Rejects non-tech roles that appear on curated company boards
 - All passing jobs are stored in `job_postings` regardless of level or location
 
@@ -126,7 +126,8 @@ Two-stage filter:
 
 - `swe` — title matches SWE keywords (`software`, `ml`, `backend`, `frontend`, `data engineer`, `cloud`, etc.)
 - `ee` — title matches EE keywords (`electrical`, `hardware`, `embedded`, `fpga`, `asic`, `vlsi`, `pcb`, `rf`, `analog`, `circuit`, etc.) and no SWE match
-- `unknown` — title has neither clear SWE nor EE signal
+- `chem` — title matches chemical/process engineering keywords (`chemical`, `process engineer`, `refinery`, `petrochemical`, `process safety`, etc.)
+- `unknown` — title has no clear target-discipline signal
 - Stored in the `discipline` column; filterable via `/query discipline:`
 
 **Stage 2 — Location** (`passes_filter`):
@@ -174,7 +175,7 @@ When many jobs are found in a single cycle, they're batched into messages of up 
 Users can subscribe to personalised job alerts delivered via Discord DM. The `/alert` wizard collects:
 
 1. **Role types** — Internships, New Grad / Entry Level, or both
-2. **Discipline** — SWE, EE, or both
+2. **Discipline** — SWE, EE, ChemE, Unknown, or all
 3. **Location** — Anywhere in the US, Remote only, Specific US state(s) (e.g. `CO, WA`), Specific country (ISO code), or Anywhere worldwide
 4. **Check interval** — 1 min (testing) through once a day
 5. **Optional filters** — keyword(s) matching title/description, company name(s)
@@ -203,7 +204,7 @@ The bot uses a single SQLite file (`jobs.db` by default, configurable via `DB_PA
 
 ### `job_postings`
 
-Canonical record for every CS-relevant job returned by any scraper. Serves as both the full job store and the dedup layer — `INSERT OR IGNORE` on the unique `(source, job_id)` key skips duplicates. Location is stored as a raw string and parsed components to support per-user location-scoped filters.
+Canonical record for every engineering-relevant job returned by any scraper. Serves as both the full job store and the dedup layer — `INSERT OR IGNORE` on the unique `(source, job_id)` key skips duplicates. Location is stored as a raw string and parsed components to support per-user location-scoped filters.
 
 | Column         | Type       | Description                                                                |
 | -------------- | ---------- | -------------------------------------------------------------------------- |
@@ -219,7 +220,7 @@ Canonical record for every CS-relevant job returned by any scraper. Serves as bo
 | `is_intern`    | INTEGER    | `1` = classified as internship, `0` = not, `NULL` = unclassified           |
 | `is_new_grad`  | INTEGER    | `1` = classified as new-grad/entry-level, `0` = not, `NULL` = unclassified |
 | `is_remote`    | INTEGER    | `1` if any of the job's locations is remote                                |
-| `discipline`   | TEXT       | `swe`, `ee`, or `unknown` — classified from job title at ingestion         |
+| `discipline`   | TEXT       | `swe`, `ee`, `chem`, a comma-combo, or `unknown` — classified from job title at ingestion |
 | `description_text` | TEXT   | HTML-stripped description, max 5 000 chars (Greenhouse + Lever only)   |
 | `is_active`    | INTEGER    | `0` once a liveness check returns 404                                      |
 | `last_checked_at` | TIMESTAMP | Last liveness probe timestamp                                          |
@@ -251,7 +252,7 @@ Per-Discord-user notification and delivery settings. Filter logic lives in `user
 | `quiet_hours_start`      | TEXT        | NULL    | Quiet window start, e.g. `"22:00"` (NULL = disabled)       |
 | `quiet_hours_end`        | TEXT        | NULL    | Quiet window end, e.g. `"08:00"`                           |
 | `companies`              | TEXT (JSON) | `[]`    | Company slugs to follow (empty = all configured companies) |
-| `disciplines`            | TEXT (JSON) | `[]`    | `["swe"]`, `["ee"]`, or `[]` for both                      |
+| `disciplines`            | TEXT (JSON) | `[]`    | `["swe"]`, `["ee"]`, `["chem"]`, or `[]` for all           |
 | `keywords`               | TEXT (JSON) | `[]`    | Title/description substrings to require (AND with rules)   |
 | `last_alerted_at`        | TIMESTAMP   | NULL    | Last time a DM alert batch was sent                        |
 | `created_at`             | TIMESTAMP   | now     | Row creation time                                          |
@@ -285,11 +286,12 @@ Additive filter tuples per user. Each row defines one independent filter — a u
 | `GREENHOUSE_SLUGS`               | No       | `[]`      | Comma-separated Greenhouse company slugs   |
 | `LEVER_SLUGS`                    | No       | `[]`      | Comma-separated Lever company slugs        |
 | `ASHBY_SLUGS`                    | No       | `[]`      | Comma-separated Ashby company slugs        |
+| `WORKDAY_SLUGS`                  | No       | `[]`      | Comma-separated Workday board slugs        |
+| `TARGET_COMPANIES`               | No       | `[]`      | Display names to include in community sources |
 | `POLL_INTERVAL_MINUTES`          | No       | `10`      | Scrape interval for Greenhouse/Lever/Ashby |
 | `SIMPLIFY_POLL_INTERVAL_MINUTES` | No       | `30`      | Scrape interval for Simplify               |
 | `DB_PATH`                        | No       | `jobs.db` | Path to SQLite database file               |
-| `META_ENABLED`                   | No       | `false`   | Enable Meta scraper (not yet implemented)  |
-| `META_POLL_INTERVAL_MINUTES`     | No       | `30`      | Meta poll interval                         |
+| `CUSTOM_SCRAPERS`                | No       | `[]`      | Comma-separated custom scraper names       |
 
 ## Local Testing
 
@@ -310,6 +312,7 @@ python -m bot.cli simplify
 # Other platforms
 python -m bot.cli lever netflix
 python -m bot.cli ashby ramp
+python -m bot.cli workday dupont.wd5:Jobs
 ```
 
 This is useful for:
@@ -428,7 +431,7 @@ Estimated cost: ~$5/month for a small persistent instance.
 - [x] **Discord DMs to specific users** — `/alert` wizard collects role, discipline, location, interval, keyword, company, and quiet-hours preferences and delivers matching jobs via DM on a per-user schedule.
 - [x] **Per-user company subscriptions** — Let each user maintain their own follow list, with predefined sets (FAANG, top startups) and individual company picks.
 - [ ] **Multi-dimensional filters** — Combinable filter tuples per user, e.g. `(fulltime,SWE,US)+(intern,SWE,colo)`, covering role type (SWE/EE/systems), job type (fulltime/intern), and location preference.
-- [x] **`/query` command** — On-demand search against the jobs DB. Supports keyword, company, role (internship / new grad / all), discipline (SWE / EE), and US state filters. Returns up to 10 embeds per query.
+- [x] **`/query` command** — On-demand search against the jobs DB. Supports keyword, company, role (internship / new grad / all), discipline (SWE / EE / ChemE / Unknown), and US state filters. Returns up to 10 embeds per query.
 - [x] **Multiple `/query` subfilters** — Allow users to do comma separation to their queries (e.g. a query on CO,WA will return Colorado and Washington)
 - [x] **Start season filter** — Add a `season` filter to `/query` (fall, spring, summer, winter) that maps to expected start date ranges, so users can narrow results to roles beginning in a specific season.
 - [x] **Quiet hours** — Per-user notification time windows so the bot only DMs or pings during hours the user configures.

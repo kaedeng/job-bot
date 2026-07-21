@@ -169,7 +169,12 @@ class TestBuildSummary:
     def test_discipline_both_shows_all(self):
         s = self._base_setup()
         s.disciplines = []
-        assert "SWE + EE (all)" in _build_summary(s)
+        assert "SWE + EE + ChemE + Unknown (all)" in _build_summary(s)
+
+    def test_discipline_chem(self):
+        s = self._base_setup()
+        s.disciplines = ["chem"]
+        assert "ChemE" in _build_summary(s)
 
     def test_location_us(self):
         assert "Anywhere in the US" in _build_summary(self._base_setup())

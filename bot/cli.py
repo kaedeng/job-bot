@@ -17,7 +17,7 @@ from bot.filters import (
     passes_filter,
 )
 from bot.models import Job
-from bot.scrapers import ashby, greenhouse, lever, simplify
+from bot.scrapers import ashby, greenhouse, lever, simplify, workday
 from bot.scrapers.custom import amazon, databricks, google, meta, microsoft, netflix
 
 logging.basicConfig(
@@ -35,6 +35,8 @@ async def run_scraper(source: str, slug: str | None) -> list[Job]:
             return await lever.scrape(slug, client)
         elif source == "ashby" and slug:
             return await ashby.scrape(slug, client)
+        elif source == "workday" and slug:
+            return await workday.scrape(slug, client)
         elif source == "simplify":
             return await simplify.scrape(client)
         elif source == "amazon":
@@ -59,13 +61,13 @@ async def dry_run(source: str, slug: str | None, show_all: bool, store: bool) ->
     jobs = await run_scraper(source, slug)
     logger.info("Got %d raw jobs", len(jobs))
 
-    cs_jobs = [j for j in jobs if is_tech_job(j)]
-    logger.info("%d jobs are tech-relevant", len(cs_jobs))
+    engineering_jobs = [j for j in jobs if is_tech_job(j)]
+    logger.info("%d jobs are engineering-relevant", len(engineering_jobs))
 
     if show_all:
         display = jobs
     else:
-        display = [j for j in cs_jobs if passes_filter(j)]
+        display = [j for j in engineering_jobs if passes_filter(j)]
         logger.info("%d jobs pass the full entry-level/US filter", len(display))
 
     for job in display:
@@ -80,10 +82,10 @@ async def dry_run(source: str, slug: str | None, show_all: bool, store: bool) ->
 
     if store:
         await init_db()
-        await store_jobs_batch(cs_jobs, parse_locations, classify_job, classify_discipline)
+        await store_jobs_batch(engineering_jobs, parse_locations, classify_job, classify_discipline)
         from bot.config import settings
 
-        logger.info("Stored %d CS jobs to %s", len(cs_jobs), settings.db_path)
+        logger.info("Stored %d engineering jobs to %s", len(engineering_jobs), settings.db_path)
 
 
 def main() -> None:
@@ -94,6 +96,7 @@ def main() -> None:
             "greenhouse",
             "lever",
             "ashby",
+            "workday",
             "simplify",
             "amazon",
             "databricks",
@@ -108,7 +111,7 @@ def main() -> None:
         "slug",
         nargs="?",
         default=None,
-        help="Company slug (required for greenhouse/lever/ashby)",
+        help="Company slug (required for greenhouse/lever/ashby/workday)",
     )
     parser.add_argument(
         "--all",
@@ -119,7 +122,7 @@ def main() -> None:
     parser.add_argument(
         "--store",
         action="store_true",
-        help="Store CS-relevant jobs to the local jobs.db (creates it if missing)",
+        help="Store engineering-relevant jobs to the local jobs.db (creates it if missing)",
     )
     args = parser.parse_args()
 

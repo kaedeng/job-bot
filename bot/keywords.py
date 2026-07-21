@@ -213,6 +213,29 @@ TECH_KEYWORDS: list[str] = [
     "dvt", "evt", "pvt", "fmea", "dfmea",
     "reliability", "mtbf", "qualification",
     "lab", "prototype", "bring-up",
+    # Process / Chemical Engineering
+    "chemical engineering", "chemical engineer", "chemistry", "chemist",
+    "process engineering", "process engineer", "process design",
+    "process development", "process optimization", "process simulation",
+    "process modeling", "process control", "process safety",
+    "production engineer", "manufacturing engineer", "plant engineer",
+    "project engineer", "refinery", "petrochemical", "oil and gas",
+    "renewable fuels", "polymer", "polymers", "catalyst", "catalysis",
+    "reaction engineering", "kinetics", "thermodynamics",
+    "heat transfer", "mass transfer", "fluid dynamics", "separations",
+    "distillation", "filtration", "solids handling", "batch process",
+    "continuous process", "pfd", "p&id", "pids", "pid",
+    "pha", "hazop", "lopa", "moc", "relief systems",
+    "overpressure protection", "equipment sizing", "line sizing",
+    "hydraulics", "debottlenecking", "turnaround", "commissioning",
+    # Chemical / laboratory tools and software
+    "x-ray diffraction", "xrd", "profilometry", "ellipsometry",
+    "atomic layer deposition", "ald", "sputtering", "thin films",
+    "aspen plus", "aspen+", "aspen hysys", "hysys", "polymath",
+    "labview", "aft fathom", "aft arrow", "bluebeam", "navisworks",
+    "solidworks", "cswa", "engineer in training", "eit",
+    "professional engineer", "pe exam", "pe license", "fe exam",
+    "spanish", "chinese", "mandarin",
     # ── Disciplines / Roles ───────────────────────────────────────────────────────
     "backend", "frontend", "full stack", "fullstack",
     "devops", "platform engineering", "infrastructure",
@@ -242,10 +265,10 @@ for _kw in TECH_KEYWORDS:
 TECH_KEYWORDS = _deduped
 del _seen, _deduped, _kw
 
-# Pre-compile word-boundary patterns for each keyword so extraction is fast.
-# Multi-word phrases like "machine learning" are matched as a unit.
+# Pre-compile token-boundary patterns for each keyword so extraction is fast.
+# Lookarounds handle symbol-ending terms like "C++", "P&ID", and "Aspen+".
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    (kw, re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE))
+    (kw, re.compile(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", re.IGNORECASE))
     for kw in TECH_KEYWORDS
 ]
 

@@ -63,6 +63,12 @@ class TestTitleInclude:
     def test_non_swe_new_grad_rejected(self):
         assert not passes_filter(_job("New Grad - Sales Associate"))
 
+    def test_process_engineering_intern(self):
+        assert passes_filter(_job("Process Engineer Intern"))
+
+    def test_chemical_engineering_coop(self):
+        assert passes_filter(_job("Chemical Engineering Co-op"))
+
 
 class TestTitleExclude:
     def test_senior(self):
@@ -227,6 +233,12 @@ class TestClassifyDiscipline:
         # "Embedded Software Engineer" matches both disciplines
         assert classify_discipline(_job(title="Embedded Software Engineer Intern")) == "swe,ee"
 
+    def test_chem_process_engineering(self):
+        assert classify_discipline(_job(title="Process Engineer Intern")) == "chem"
+
+    def test_chem_chemical_engineering(self):
+        assert classify_discipline(_job(title="Chemical Engineering Co-op")) == "chem"
+
     def test_unknown(self):
         assert classify_discipline(_job(title="Marketing Intern")) == "unknown"
 
@@ -250,6 +262,12 @@ class TestIsTechJob:
 
     def test_data_engineer(self):
         assert is_tech_job(_job(title="Data Engineer"))
+
+    def test_process_engineer(self):
+        assert is_tech_job(_job(title="Process Engineer"))
+
+    def test_chemical_engineering(self):
+        assert is_tech_job(_job(title="Chemical Engineering Intern"))
 
     def test_non_tech(self):
         assert not is_tech_job(_job(title="Marketing Manager"))

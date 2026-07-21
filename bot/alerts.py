@@ -33,7 +33,7 @@ class _AlertSetup:
     """Accumulates user choices through the wizard steps."""
 
     role_types: list[str] = field(default_factory=list)  # "intern", "new_grad"
-    disciplines: list[str] = field(default_factory=list)  # "swe","ee"; empty = both
+    disciplines: list[str] = field(default_factory=list)  # "swe","ee","chem"; empty = all
     location_scope: str = "us"  # "us","remote","state","country:<CC>","worldwide"
     states: list[str] = field(default_factory=list)  # e.g. ["CO","WA"]
     country_code: str = ""  # e.g. "GB" for non-US
@@ -82,10 +82,15 @@ class _Step2View(discord.ui.View):
     @discord.ui.select(
         placeholder="Select one or more...",
         min_values=1,
-        max_values=3,
+        max_values=4,
         options=[
             discord.SelectOption(label="Software Engineering (SWE)", value="swe", emoji="💻"),
             discord.SelectOption(label="Electrical Engineering (EE)", value="ee", emoji="⚡"),
+            discord.SelectOption(
+                label="Chemical / Process Engineering (ChemE)",
+                value="chem",
+                emoji="⚗️",
+            ),
             discord.SelectOption(
                 label="Unknown / Unclassified",
                 value="unknown",
@@ -98,7 +103,9 @@ class _Step2View(discord.ui.View):
         self, interaction: discord.Interaction, select: discord.ui.Select
     ) -> None:
         vals = list(select.values)
-        self._setup.disciplines = [] if set(vals) == {"swe", "ee", "unknown"} else vals
+        self._setup.disciplines = (
+            [] if set(vals) == {"swe", "ee", "chem", "unknown"} else vals
+        )
         await interaction.response.edit_message(
             content=_header(3, "Location", "Where do you want to look for jobs?"),
             view=_Step3View(self._setup),
@@ -434,9 +441,9 @@ def _build_summary(setup: _AlertSetup) -> str:
     role_str = " + ".join(
         "Internships" if r == "intern" else "New Grad / Entry Level" for r in setup.role_types
     )
-    disc_label = {"swe": "SWE", "ee": "EE", "unknown": "Unknown"}
+    disc_label = {"swe": "SWE", "ee": "EE", "chem": "ChemE", "unknown": "Unknown"}
     disc_str = (
-        "SWE + EE + Unknown (all)"
+        "SWE + EE + ChemE + Unknown (all)"
         if not setup.disciplines
         else " + ".join(disc_label.get(d, d.upper()) for d in setup.disciplines)
     )

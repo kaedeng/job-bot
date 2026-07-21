@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS job_postings (
     is_intern        INTEGER,                        -- 1/0/NULL (NULL = unclassified)
     is_new_grad      INTEGER,                        -- 1/0/NULL
     is_remote        INTEGER   NOT NULL DEFAULT 0,   -- 1 if any location segment is remote
-    discipline       TEXT      NOT NULL DEFAULT 'unknown',  -- "swe" | "ee" | "unknown"
+    discipline       TEXT      NOT NULL DEFAULT 'unknown',  -- "swe" | "ee" | "chem" | "unknown"
     description_text TEXT,                           -- HTML-stripped description, max 5000 chars
     is_active        INTEGER   NOT NULL DEFAULT 1,   -- 0 once a liveness check returns 404
     last_checked_at  TIMESTAMP,                      -- last liveness probe timestamp
@@ -110,6 +110,14 @@ CREATE INDEX IF NOT EXISTS idx_job_locations_country        ON job_locations(cou
 CREATE INDEX IF NOT EXISTS idx_job_locations_state          ON job_locations(state);
 CREATE INDEX IF NOT EXISTS idx_user_filter_rules_user_id    ON user_filter_rules(user_id);
 """
+
+
+def _discipline_condition(disciplines: list[str], params: list[object]) -> str | None:
+    """Return a SQL condition matching one or more comma-stored discipline tags."""
+    if not disciplines:
+        return None
+    params.extend(f"%,{d.lower()},%" for d in disciplines)
+    return "(" + " OR ".join("(',' || jp.discipline || ',') LIKE ?" for _ in disciplines) + ")"
 
 
 async def _migrate_db(db: aiosqlite.Connection) -> None:
@@ -224,18 +232,18 @@ async def store_jobs_batch(
     classify_fn: Any,
     classify_discipline_fn: Any,
 ) -> None:
-    """Insert new tech-relevant jobs into job_postings + job_locations.
+    """Insert new engineering-relevant jobs into job_postings + job_locations.
 
     Already-seen jobs (matched on UNIQUE source+job_id) are silently skipped.
 
     Args:
-        jobs: Jobs to store. Caller is responsible for pre-filtering to tech-relevant roles.
+        jobs: Jobs to store. Caller is responsible for pre-filtering to engineering-relevant roles.
         parse_locations_fn: Callable[[str], list[dict]] -- returns a list of location dicts
             (country, state, city, is_remote) parsed from the raw location string.
         classify_fn: Callable[[Job], tuple[bool, bool]] --
             returns (is_intern, is_new_grad) for each job.
         classify_discipline_fn: Callable[[Job], str] --
-            returns "swe", "ee", or "unknown" for each job.
+            returns "swe", "ee", "chem", a comma-combo, or "unknown" for each job.
     """
     conn = await get_conn()
     for j in jobs:
@@ -325,7 +333,7 @@ async def query_jobs(
         company: One or more company slugs (comma-string or list). OR logic across values.
         role: One or more of "intern", "new_grad", "all" (comma-string or list).
               OR logic; "all" disables the level filter entirely. None = intern + new_grad.
-        discipline: One or more of "swe", "ee" (comma-string or list). OR logic.
+        discipline: One or more of "swe", "ee", "chem", "unknown" (comma-string or list).
         state: One or more US state abbreviations (comma-string or list). OR logic.
         season: "summer", "fall", "spring", or "winter" — matched against job title.
         remote_only: If True, only return jobs with is_remote = 1.
@@ -375,10 +383,9 @@ async def query_jobs(
         # Default: intern or new_grad only (exclude senior/unclassified)
         jp_conditions.append("(jp.is_intern = 1 OR jp.is_new_grad = 1)")
 
-    if disciplines:
-        placeholders = ",".join("?" * len(disciplines))
-        jp_conditions.append(f"jp.discipline IN ({placeholders})")
-        params.extend(d.lower() for d in disciplines)
+    disc_condition = _discipline_condition(disciplines, params)
+    if disc_condition:
+        jp_conditions.append(disc_condition)
 
     if season:
         jp_conditions.append("jp.title LIKE ?")
@@ -473,10 +480,9 @@ async def get_companies_for_query(
     else:
         conditions.append("(jp.is_intern = 1 OR jp.is_new_grad = 1)")
 
-    if disciplines:
-        placeholders = ",".join("?" * len(disciplines))
-        conditions.append(f"jp.discipline IN ({placeholders})")
-        params.extend(d.lower() for d in disciplines)
+    disc_condition = _discipline_condition(disciplines, params)
+    if disc_condition:
+        conditions.append(disc_condition)
 
     if season:
         conditions.append("jp.title LIKE ?")
@@ -893,10 +899,9 @@ async def query_jobs_for_user(
         conditions.append("jp.ingested_at > ?")
         params.append(ingested_after)
 
-    if disciplines:
-        placeholders = ",".join("?" * len(disciplines))
-        conditions.append(f"jp.discipline IN ({placeholders})")
-        params.extend(disciplines)
+    disc_condition = _discipline_condition(disciplines, params)
+    if disc_condition:
+        conditions.append(disc_condition)
 
     if keywords:
         kw_clause = " OR ".join("(jp.title LIKE ? OR jp.description_text LIKE ?)" for _ in keywords)

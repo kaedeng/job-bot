@@ -10,6 +10,7 @@ import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot import db
+from bot.company_names import resolve
 from bot.config import settings
 from bot.filters import (
     classify_discipline,
@@ -88,23 +89,25 @@ async def _maybe_alert_health() -> None:
 
 
 async def _process_jobs(jobs: list[Job]) -> None:
-    """Dedup, store CS jobs, filter to entry-level/US, and notify."""
+    """Dedup, store target engineering jobs, filter to entry-level/US, and notify."""
     if _channel is None:
         logger.error("Channel not set — skipping notification")
         return
 
-    # Pre-filter to tech-relevant roles before touching the DB
-    cs_jobs = [j for j in jobs if is_tech_job(j)]
+    # Pre-filter to engineering-relevant roles before touching the DB
+    engineering_jobs = [j for j in jobs if is_tech_job(j)]
 
     # Batch dedup: single query instead of N individual lookups
-    new_cs_jobs = await db.filter_unseen(cs_jobs)
+    new_engineering_jobs = await db.filter_unseen(engineering_jobs)
 
-    # Persist all new CS jobs (parse_location runs inside store_jobs_batch)
-    if new_cs_jobs:
-        await db.store_jobs_batch(new_cs_jobs, parse_locations, classify_job, classify_discipline)
+    # Persist all new engineering jobs (parse_location runs inside store_jobs_batch)
+    if new_engineering_jobs:
+        await db.store_jobs_batch(
+            new_engineering_jobs, parse_locations, classify_job, classify_discipline
+        )
 
     # Notify only those that also pass the full entry-level/US filter
-    to_notify = [j for j in new_cs_jobs if passes_filter(j)]
+    to_notify = [j for j in new_engineering_jobs if passes_filter(j)]
     if not to_notify:
         return
 
@@ -182,21 +185,43 @@ async def poll_workday() -> None:
         await _maybe_alert_health()
 
 
+def _workday_company_name(slug: str) -> str | None:
+    parts = slug.split(":", 2)
+    if len(parts) == 2:
+        org = parts[0].split(".")[0]
+    elif len(parts) == 3:
+        org = parts[1]
+    else:
+        return None
+    return resolve(org.split(".")[0]).lower()
+
+
+def _simplify_company_filter() -> frozenset[str] | None:
+    companies: set[str] = set()
+    for slug in (*settings.greenhouse_slugs, *settings.lever_slugs, *settings.ashby_slugs):
+        companies.add(slug.lower())
+        companies.add(resolve(slug).lower())
+
+    for slug in settings.workday_slugs:
+        name = _workday_company_name(slug)
+        if name:
+            companies.add(name)
+
+    for name in settings.custom_scrapers:
+        companies.add(name.lower())
+        companies.add(resolve(name).lower())
+
+    for name in settings.target_companies:
+        companies.add(name.lower())
+        companies.add(resolve(name).lower())
+
+    return frozenset(companies) or None
+
+
 async def poll_simplify() -> None:
     try:
-        companies = (
-            frozenset(
-                s.lower()
-                for s in (
-                    *settings.greenhouse_slugs,
-                    *settings.lever_slugs,
-                    *settings.ashby_slugs,
-                )
-            )
-            or None
-        )  # None = no filter if config is empty
         async with httpx.AsyncClient(timeout=30) as client:
-            jobs = await simplify.scrape(client, companies=companies)
+            jobs = await simplify.scrape(client, companies=_simplify_company_filter())
             await _process_jobs(jobs)
         _record_success("simplify")
     except Exception as exc:

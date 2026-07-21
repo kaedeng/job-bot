@@ -47,15 +47,18 @@ def _fmt_csv(val: str) -> str:
 
 def _build_filter_str(
     keyword: str | None,
+    company: str | None,
     role: str | None,
     discipline: str | None,
     state: str | None,
     season_name: str | None,
-    since_name: str | None,
+    since_name: str | None = None,
 ) -> str:
     filters: list[str] = []
     if keyword:
         filters.append(f"keyword=**{_fmt_csv(keyword)}**")
+    if company:
+        filters.append(f"company=**{_fmt_csv(company)}**")
     if role:
         filters.append(f"role=**{_fmt_csv(role)}**")
     if discipline:
@@ -250,7 +253,7 @@ def register(tree: app_commands.CommandTree) -> None:
         keyword="Title or description keyword(s), comma-separated for OR (e.g. 'Python,React')",
         company="Company name — start typing to search (autocomplete)",
         role="Role type(s): intern, new_grad, all — comma-separated for OR",
-        discipline="Discipline(s): swe, ee — comma-separated for OR (e.g. 'swe,ee')",
+        discipline="Discipline(s): swe, ee, chem, unknown - comma-separated for OR",
         state="US state(s), comma-separated for OR (e.g. 'CO,WA')",
         season="Start season: summer, fall, spring, winter",
         since="Only show jobs posted/ingested within this window",
@@ -317,7 +320,9 @@ def register(tree: app_commands.CommandTree) -> None:
         embeds = [alerts.build_db_row_embed(r) for r in rows]
         season_name = season.name if season else None
         since_name = since.name if since else None
-        filter_str = _build_filter_str(keyword, role, discipline, state, season_name, since_name)
+        filter_str = _build_filter_str(
+            keyword, company, role, discipline, state, season_name, since_name
+        )
         header = f"Showing {len(rows)} result(s) for {filter_str}:"
 
         view = QueryView(
@@ -485,9 +490,9 @@ def register(tree: app_commands.CommandTree) -> None:
         interval_str = alerts.interval_display(prefs["alert_interval_minutes"])
 
         disciplines = prefs.get("disciplines") or []
-        disc_label = {"swe": "SWE", "ee": "EE", "unknown": "Unknown"}
+        disc_label = {"swe": "SWE", "ee": "EE", "chem": "ChemE", "unknown": "Unknown"}
         disc_str = (
-            "SWE + EE + Unknown (all)"
+            "SWE + EE + ChemE + Unknown (all)"
             if not disciplines
             else " + ".join(disc_label.get(d, d.upper()) for d in disciplines)
         )

@@ -190,6 +190,11 @@ class TestStoreJobsBatch:
         rows = await db.query_jobs(discipline="ee", role="all")
         assert len(rows) == 1
 
+    async def test_classifies_chem_discipline(self, fresh_db):
+        await _store([_job(title="Process Engineer Intern", location="Houston, TX")])
+        rows = await db.query_jobs(discipline="chem", role="all")
+        assert len(rows) == 1
+
     async def test_is_remote_flag(self, fresh_db):
         await _store([_job(location="Remote")])
         rows = await db.query_jobs(role="all")
@@ -343,10 +348,17 @@ class TestQueryJobs:
             [
                 _job(id="1", title="Software Engineer Intern"),
                 _job(id="2", title="Electrical Engineer Intern", location="Austin, TX"),
+                _job(id="3", title="Process Engineer Intern", location="Houston, TX"),
             ]
         )
-        rows = await db.query_jobs(discipline="swe,ee", role="all")
-        assert len(rows) == 2
+        rows = await db.query_jobs(discipline="swe,ee,chem", role="all")
+        assert len(rows) == 3
+
+    async def test_discipline_filter_matches_combo_tags(self, fresh_db):
+        await _store([_job(title="Electrical Process Engineer Intern", location="Houston, TX")])
+        rows = await db.query_jobs(discipline="chem", role="all")
+        assert len(rows) == 1
+        assert rows[0]["discipline"] == "ee,chem"
 
     async def test_state_filter(self, fresh_db):
         await _store(
